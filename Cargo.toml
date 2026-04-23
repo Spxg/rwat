@@ -1,0 +1,18 @@
+[package]
+name = "rwat"
+version = "0.1.0"
+edition = "2024"
+description = "Parse annotated WAT into wasm relocation object"
+repository = "https://github.com/Spxg/rwat"
+readme = "README.md"
+license = "MIT"
+keywords = ["wasm", "wat", "relocation", "linking"]
+categories = ["kasm"]
+
+[dependencies]
+wasm-encoder = "0.247.0"
+wasmparser = "0.247.0"
+wast = "247.0.0"
+
+[dev-dependencies]
+wasmprinter = "0.247.0"
