@@ -64,6 +64,7 @@ final wasm object bytes
 
 In principle, modifying `wast` directly would make this implementation simpler. This project does not take that route for a practical reason: these annotations are custom syntax, not part of the official WAT grammar and not tied to a standardized proposal. Because of that:
 
+- `wast` exposes a fair amount of parser/encoder functionality only through private APIs, so an external crate cannot directly reuse some of the integration points that would make this approach practical,
 - getting such changes accepted upstream in `wast` would be difficult,
 - carrying a private `wast` fork would create ongoing maintenance cost.
 
