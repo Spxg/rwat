@@ -557,6 +557,9 @@ fn build_link_info<'a>(
 
     for (index, sym) in imported_tables.iter().enumerate() {
         let index = u32::try_from(index).unwrap();
+        if !linking.contains(&SymbolKey::Table(index)) {
+            continue;
+        }
         symbol_indices.insert(
             SymbolKey::Table(index),
             u32::try_from(symbols.len()).unwrap(),

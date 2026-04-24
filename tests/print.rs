@@ -44,7 +44,7 @@ fn test_print_table_import_symbol_module() {
     let actual = print_wat(
         r#"
             (module (@rwat)
-              (import "env" "tab" (table $tab 1 externref))
+              (import "env" "tab" (table $tab (@sym) 1 externref))
             )
         "#,
     );

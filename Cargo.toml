@@ -7,7 +7,7 @@ repository = "https://github.com/Spxg/rwat"
 readme = "README.md"
 license = "MIT"
 keywords = ["wasm", "wat", "relocation", "linking"]
-categories = ["kasm"]
+categories = ["wasm"]
 
 [dependencies]
 wasm-encoder = "0.247.0"
