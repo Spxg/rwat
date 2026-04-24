@@ -30,9 +30,30 @@ fn test_print_import_only_symbol_module() {
             )
         "#,
     );
-    assert!(actual.contains(r#"(import "env" "foo" (func $foo (;0;) (type 0)))"#));
-    assert!(actual.contains(r#"(@custom "linking" (after import)"#));
-    assert!(!actual.contains(r#""reloc.CODE""#));
+    let expected = r#"(module
+  (type (;0;) (func))
+  (import "env" "foo" (func $foo (;0;) (type 0)))
+  (@custom "linking" (after import) "\02\08\04\01\00\10\00")
+)
+"#;
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_print_table_import_symbol_module() {
+    let actual = print_wat(
+        r#"
+            (module (@rwat)
+              (import "env" "tab" (table $tab 1 externref))
+            )
+        "#,
+    );
+    let expected = r#"(module
+  (import "env" "tab" (table $tab (;0;) 1 externref))
+  (@custom "linking" (after import) "\02\08\04\01\05\10\00")
+)
+"#;
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -45,9 +66,13 @@ fn test_print_defined_symbol_module_without_imports() {
             )
         "#,
     );
-    assert!(actual.contains(r#"(func $foo (;0;) (type 0))"#));
-    assert!(actual.contains(r#"(@custom "linking" (after code)"#));
-    assert!(!actual.contains(r#""reloc.CODE""#));
+    let expected = r#"(module
+  (type (;0;) (func))
+  (func $foo (;0;) (type 0))
+  (@custom "linking" (after code) "\02\08\08\01\00\00\00\03foo")
+)
+"#;
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -189,6 +214,61 @@ fn test_print_group2_imports() {
 }
 
 #[test]
+fn test_print_call_indirect_table_reloc() {
+    let actual = print_wat(
+        r#"
+            (module (@rwat)
+              (type (func))
+              (import "env" "tab" (table $tab 1 funcref))
+              (func
+                i32.const 0
+                call_indirect $tab (type 0) (@reloc)
+              )
+            )
+        "#,
+    );
+    let expected = r#"(module
+  (type (;0;) (func))
+  (import "env" "tab" (table $tab (;0;) 1 funcref))
+  (func (;0;) (type 0)
+    i32.const 0
+    call_indirect (type 0)
+  )
+  (@custom "linking" (after code) "\02\08\04\01\05\10\00")
+  (@custom "reloc.CODE" (after code) "\03\01\14\07\00")
+)
+"#;
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn test_print_table_copy_relocates_both_table_immediates() {
+    let actual = print_wat(
+        r#"
+            (module (@rwat)
+              (import "env" "dst" (table $dst 1 externref))
+              (import "env" "src" (table $src 1 externref))
+              (func
+                table.copy $dst $src (@reloc)
+              )
+            )
+        "#,
+    );
+    let expected = r#"(module
+  (type (;0;) (func))
+  (import "env" "dst" (table $dst (;0;) 1 externref))
+  (import "env" "src" (table $src (;1;) 1 externref))
+  (func (;0;) (type 0)
+    table.copy $dst $src
+  )
+  (@custom "linking" (after code) "\02\08\07\02\05\10\00\05\10\01")
+  (@custom "reloc.CODE" (after code) "\03\02\14\05\00\14\0a\01")
+)
+"#;
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn test_parse_rejects_missing_rwat_annotation() {
     let wat = r#"
             (module
@@ -230,5 +310,24 @@ fn test_parse_rejects_reloc_to_unnamed_defined_function() {
     let err = rwat::parse_rwat(wat).unwrap_err().to_string();
     assert!(err.contains(
         "defined function symbols require an explicit `@sym (name ...)` or function identifier",
+    ));
+}
+
+#[test]
+fn test_parse_rejects_reloc_to_unnamed_defined_table() {
+    let wat = r#"
+            (module (@rwat)
+              (type (func))
+              (table 1 funcref)
+              (func
+                i32.const 0
+                call_indirect 0 (type 0) (@reloc)
+              )
+            )
+        "#;
+
+    let err = rwat::parse_rwat(wat).unwrap_err().to_string();
+    assert!(err.contains(
+        "defined table symbols require an explicit `@sym (name ...)` or table identifier",
     ));
 }

@@ -22,8 +22,29 @@ pub(crate) fn scan_func_sym<'a>(
 }
 
 // Example:
+// `(table $t (@sym (name "tab")) 1 externref)`
+//  -> `Some(Some("tab"))`
+// `(table $t (@sym) 1 externref)`
+//  -> `Some(None)`
+// `(table $t 1 externref)`
+//  -> `None`
+pub(crate) fn scan_table_sym<'a>(
+    cursor: Cursor<'a>,
+) -> Result<(Option<Option<&'a str>>, Cursor<'a>)> {
+    let cursor = expect_keyword(cursor, "table")?;
+    let cursor = if let Some((_, next)) = cursor.id()? {
+        next
+    } else {
+        cursor
+    };
+    scan_sym_annotation(cursor)
+}
+
+// Example:
 // `(import "env" "f" (func $f (@sym (name "foo"))))`
 //  -> `[Some(Some("foo"))]`
+// `(import "env" "t" (table $t (@sym (name "tab")) 1 externref))`
+//  -> `[Some(Some("tab"))]`
 // `(import "env" (item "f" (func $f (@sym))) (item "g" (memory 1)))`
 //  -> `[Some(None), None]`
 // `(import "env" (item "f") (item "g") (func))`
@@ -75,12 +96,11 @@ pub(crate) fn scan_import_syms<'a>(
 //  -> spans for the `call` and `return_call` instructions
 pub(crate) fn scan_func_reloc_spans<'a>(mut cursor: Cursor<'a>) -> Result<(Vec<Span>, Cursor<'a>)> {
     let mut relocs = Vec::new();
-    let mut last_top_level_call = None;
+    let mut last_relocatable_instr = None;
 
     loop {
         if let Some((keyword, next)) = cursor.keyword()? {
-            last_top_level_call =
-                matches!(keyword, "call" | "return_call").then(|| cursor.cur_span());
+            last_relocatable_instr = is_relocatable_keyword(keyword).then(|| cursor.cur_span());
             cursor = next;
             continue;
         }
@@ -89,10 +109,12 @@ pub(crate) fn scan_func_reloc_spans<'a>(mut cursor: Cursor<'a>) -> Result<(Vec<S
             if let Some((annotation, after_annotation)) = next.annotation()?
                 && annotation == "reloc"
             {
-                let Some(call_span) = last_top_level_call else {
-                    return Err(cursor.error("`@reloc` must follow `call` or `return_call`"));
+                let Some(instr_span) = last_relocatable_instr else {
+                    return Err(cursor.error(
+                        "`@reloc` must follow `call`, `return_call`, `call_indirect`, `return_call_indirect`, or a table instruction",
+                    ));
                 };
-                relocs.push(call_span);
+                relocs.push(instr_span);
                 cursor = expect_rparen(after_annotation)?;
                 continue;
             }
@@ -115,6 +137,27 @@ pub(crate) fn scan_func_reloc_spans<'a>(mut cursor: Cursor<'a>) -> Result<(Vec<S
     }
 
     Ok((relocs, cursor))
+}
+
+fn is_relocatable_keyword(keyword: &str) -> bool {
+    matches!(
+        keyword,
+        "call"
+            | "return_call"
+            | "call_indirect"
+            | "return_call_indirect"
+            | "table.get"
+            | "table.set"
+            | "table.init"
+            | "table.copy"
+            | "table.fill"
+            | "table.size"
+            | "table.grow"
+            | "table.atomic.get"
+            | "table.atomic.set"
+            | "table.atomic.rmw.xchg"
+            | "table.atomic.rmw.cmpxchg"
+    )
 }
 
 fn peek_group_item(cursor: Cursor<'_>) -> Result<bool> {
@@ -146,6 +189,8 @@ fn scan_group_item<'a>(cursor: Cursor<'a>) -> Result<(bool, Option<Option<&'a st
 //  -> `Some(Some("foo"))`
 // `(func $f (@sym) (type 0))`
 //  -> `Some(None)`
+// `(table $t (@sym (name "tab")) 1 externref)`
+//  -> `Some(Some("tab"))`
 // `(memory 1)`
 //  -> `None`
 fn scan_item_sig<'a>(cursor: Cursor<'a>) -> Result<(Option<Option<&'a str>>, Cursor<'a>)> {
@@ -155,7 +200,7 @@ fn scan_item_sig<'a>(cursor: Cursor<'a>) -> Result<(Option<Option<&'a str>>, Cur
     };
 
     let mut sym = None;
-    if kind == "func" {
+    if kind == "func" || kind == "table" {
         if let Some((_, next)) = cursor.id()? {
             cursor = next;
         }
@@ -296,8 +341,8 @@ fn expect_utf8_string<'a>(cursor: Cursor<'a>) -> Result<(&'a str, Cursor<'a>)> {
 mod tests {
     use super::*;
     use wast::parser;
-    use wast::parser::ParseBuffer;
     use wast::parser::Parse;
+    use wast::parser::ParseBuffer;
     use wast::parser::Parser;
 
     fn into_owned(sym: Option<Option<&str>>) -> Option<Option<String>> {
@@ -307,6 +352,11 @@ mod tests {
     fn parse_func_sym(src: &str) -> Option<Option<String>> {
         let buf = ParseBuffer::new(src).unwrap();
         into_owned(parser::parse::<FuncSym<'_>>(&buf).unwrap().0)
+    }
+
+    fn parse_table_sym(src: &str) -> Option<Option<String>> {
+        let buf = ParseBuffer::new(src).unwrap();
+        into_owned(parser::parse::<TableSym<'_>>(&buf).unwrap().0)
     }
 
     fn parse_import_syms(src: &str) -> Vec<Option<Option<String>>> {
@@ -389,11 +439,26 @@ mod tests {
 
     struct ItemSig<'a>(Option<Option<&'a str>>);
 
+    struct TableSym<'a>(Option<Option<&'a str>>);
+
     impl<'a> Parse<'a> for ItemSig<'a> {
         fn parse(parser: Parser<'a>) -> Result<Self> {
             let _sym = parser.register_annotation("sym");
             let sym = parser.step(scan_item_sig)?;
             Ok(ItemSig(sym))
+        }
+    }
+
+    impl<'a> Parse<'a> for TableSym<'a> {
+        fn parse(parser: Parser<'a>) -> Result<Self> {
+            let _sym = parser.register_annotation("sym");
+            let sym = parser.step(|cursor| {
+                let cursor = expect_lparen(cursor)?;
+                let (sym, cursor) = scan_table_sym(cursor)?;
+                let cursor = skip_until_rparen(cursor)?;
+                Ok((sym, cursor))
+            })?;
+            Ok(TableSym(sym))
         }
     }
 
@@ -418,9 +483,25 @@ mod tests {
 
     #[test]
     fn test_scan_func_sym_examples() {
-        assert_eq!(parse_func_sym(r#"(func $f (@sym (name "foo")))"#), Some(Some("foo".into())));
+        assert_eq!(
+            parse_func_sym(r#"(func $f (@sym (name "foo")))"#),
+            Some(Some("foo".into()))
+        );
         assert_eq!(parse_func_sym(r#"(func $f (@sym))"#), Some(None));
         assert_eq!(parse_func_sym(r#"(func $f)"#), None);
+    }
+
+    #[test]
+    fn test_scan_table_sym_examples() {
+        assert_eq!(
+            parse_table_sym(r#"(table $t (@sym (name "tab")) 1 externref)"#),
+            Some(Some("tab".into())),
+        );
+        assert_eq!(
+            parse_table_sym(r#"(table $t (@sym) 1 externref)"#),
+            Some(None)
+        );
+        assert_eq!(parse_table_sym(r#"(table $t 1 externref)"#), None);
     }
 
     #[test]
@@ -430,7 +511,13 @@ mod tests {
             vec![Some(Some("foo".into()))],
         );
         assert_eq!(
-            parse_import_syms(r#"(import "env" (item "f" (func $f (@sym))) (item "g" (memory 1)))"#),
+            parse_import_syms(r#"(import "env" "t" (table $t (@sym (name "tab")) 1 externref))"#),
+            vec![Some(Some("tab".into()))],
+        );
+        assert_eq!(
+            parse_import_syms(
+                r#"(import "env" (item "f" (func $f (@sym))) (item "g" (memory 1)))"#
+            ),
             vec![Some(None), None],
         );
         assert_eq!(
@@ -451,24 +538,40 @@ mod tests {
             parse_reloc_count(r#"(func call $foo (@reloc) i32.const 0 return_call $bar (@reloc))"#),
             2,
         );
+        assert_eq!(
+            parse_reloc_count(
+                r#"(func i32.const 0 call_indirect (type 0) (@reloc) table.get 0 (@reloc))"#,
+            ),
+            2,
+        );
     }
 
     #[test]
     fn test_scan_func_reloc_spans_rejects_non_call_annotation() {
         let err = parse_reloc_err(r#"(func i32.const 0 (@reloc))"#);
-        assert!(err.contains("`@reloc` must follow `call` or `return_call`"));
+        assert!(err.contains("`@reloc` must follow"));
     }
 
     #[test]
     fn test_scan_item_sig_examples() {
-        assert_eq!(parse_item_sig(r#"(func $f (@sym (name "foo")) (type 0))"#), Some(Some("foo".into())));
+        assert_eq!(
+            parse_item_sig(r#"(func $f (@sym (name "foo")) (type 0))"#),
+            Some(Some("foo".into()))
+        );
         assert_eq!(parse_item_sig(r#"(func $f (@sym) (type 0))"#), Some(None));
+        assert_eq!(
+            parse_item_sig(r#"(table $t (@sym (name "tab")) 1 externref)"#),
+            Some(Some("tab".into())),
+        );
         assert_eq!(parse_item_sig(r#"(memory 1)"#), None);
     }
 
     #[test]
     fn test_scan_sym_annotation_examples() {
-        assert_eq!(parse_sym_annotation(r#"(@sym (name "foo"))"#), Some(Some("foo".into())));
+        assert_eq!(
+            parse_sym_annotation(r#"(@sym (name "foo"))"#),
+            Some(Some("foo".into()))
+        );
         assert_eq!(parse_sym_annotation(r#"(@sym)"#), Some(None));
         assert_eq!(parse_sym_annotation(r#"(type 0)"#), None);
     }

@@ -13,10 +13,10 @@ pub fn parse_rwat(wat: &str) -> wast::parser::Result<Vec<u8>>
 `rwat` extends plain WAT with three annotations:
 
 - `(@rwat)`: required on the module header to enable `rwat` parsing.
-- `(@sym)` or `(@sym (name "..."))`: declares a symbol for a function import or function definition.
-- `(@reloc)`: marks the immediately preceding `call` or `return_call` as requiring a relocation entry.
+- `(@sym)` or `(@sym (name "..."))`: declares a symbol for a function/table import or function/table definition.
+- `(@reloc)`: marks the immediately preceding relocatable instruction as requiring a relocation entry. This includes `call`, `return_call`, `call_indirect`, `return_call_indirect`, and table instructions such as `table.get`, `table.copy`, and `table.size`.
 
-For function definitions, if you write `(@sym)` without an explicit name, `rwat` uses the function ID as the symbol name when available.
+For function or table definitions, if you write `(@sym)` without an explicit name, `rwat` uses the item ID as the symbol name when available.
 
 ## How It Works
 
@@ -43,9 +43,9 @@ plain wasm bytes
     | 4. `wasmparser` reads raw sections
     |    and decodes the code section
     v
-code section + call offsets
+code section + relocatable-immediate offsets
     |
-    | 5. patch `call` / `return_call` immediates
+    | 5. patch function/table immediates
     |    to fixed-width 5-byte LEBs when `(@reloc)` is present
     |    so relocation offsets stay stable
     v
@@ -84,7 +84,7 @@ Given this WAT:
 The generated wasm keeps the normal code section and also includes:
 
 - `linking`: symbol table metadata.
-- `reloc.CODE`: relocation records for function indices in the code section.
+- `reloc.CODE`: relocation records for function indices and table immediates in the code section.
 
 ```text
 wat.o:	file format wasm 0x1

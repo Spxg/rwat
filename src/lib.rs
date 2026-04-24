@@ -11,12 +11,14 @@ use wasmparser::CodeSectionReader;
 use wasmparser::Operator;
 use wasmparser::Parser as WasmParser;
 use wasmparser::{BinaryReader, FunctionBody};
-use wast::core::Func;
 use wast::core::FuncKind;
 use wast::core::Imports;
 use wast::core::ItemKind;
 use wast::core::ModuleField;
 use wast::core::ModuleKind;
+use wast::core::Table;
+use wast::core::TableKind;
+use wast::core::{Func, Instruction};
 use wast::kw;
 use wast::parser;
 use wast::parser::Parse;
@@ -37,11 +39,13 @@ mod annotation {
 /// code section's id always 10
 const CODE_SECTION_ID: u8 = 10;
 const RELOC_FUNCTION_INDEX_LEB: u8 = 0;
+const RELOC_TABLE_NUMBER_LEB: u8 = 20;
 
 #[derive(Debug, Default)]
 struct RelocWat<'a> {
     import_annotations: Vec<RelocImports<'a>>,
     func_annotations: Vec<FuncAnnotation<'a>>,
+    table_annotations: Vec<TableAnnotation<'a>>,
 }
 
 #[derive(Debug)]
@@ -56,18 +60,37 @@ struct FuncAnnotation<'a> {
 }
 
 #[derive(Debug)]
+struct TableAnnotation<'a> {
+    sym: Option<Option<&'a str>>,
+}
+
+#[derive(Debug)]
 enum ParsedRelocFunc<'a> {
     Import(Option<Option<&'a str>>),
     Defined(FuncAnnotation<'a>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SymbolKey {
+    Function(u32),
+    Table(u32),
+}
+
 #[derive(Debug)]
-enum FunctionSymbol<'a> {
-    Import {
+enum Symbol<'a> {
+    FunctionImport {
         index: u32,
         explicit_name: Option<&'a str>,
     },
-    Defined {
+    FunctionDefined {
+        index: u32,
+        symbol_name: &'a str,
+    },
+    TableImport {
+        index: u32,
+        explicit_name: Option<&'a str>,
+    },
+    TableDefined {
         index: u32,
         symbol_name: &'a str,
     },
@@ -76,21 +99,34 @@ enum FunctionSymbol<'a> {
 #[derive(Debug)]
 struct DefinedFunc<'a> {
     symbol_name: Option<&'a str>,
-    reloc_calls: Vec<bool>,
+    reloc_instrs: Vec<ParsedRelocInstruction>,
     span: Span,
 }
 
 #[derive(Debug)]
+struct DefinedTable<'a> {
+    symbol_name: Option<&'a str>,
+    span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedRelocInstruction {
+    has_reloc: bool,
+    targets: Vec<SymbolKey>,
+}
+
+#[derive(Debug)]
 struct LinkInfo<'a> {
-    symbols: Vec<FunctionSymbol<'a>>,
-    symbol_indices: HashMap<u32, u32>,
+    symbols: Vec<Symbol<'a>>,
+    symbol_indices: HashMap<SymbolKey, u32>,
     defined_funcs: Vec<DefinedFunc<'a>>,
 }
 
 #[derive(Debug)]
 struct CodeRelocation {
     offset: u32,
-    target_func_index: u32,
+    reloc_type: u8,
+    target: SymbolKey,
 }
 
 #[derive(Debug)]
@@ -206,6 +242,9 @@ impl<'a> Parse<'a> for RelocWat<'a> {
                                 rwat.func_annotations.push(annotation)
                             }
                         }
+                    } else if parser.peek2::<kw::table>()? {
+                        rwat.table_annotations
+                            .push(parser.parens(TableAnnotation::parse)?);
                     } else {
                         parser.parens(|parser| parser.parse::<ModuleField<'a>>().map(|_| ()))?;
                     }
@@ -269,11 +308,26 @@ impl<'a> Parse<'a> for ParsedRelocFunc<'a> {
     }
 }
 
-fn resolve_func_calls(
+impl<'a> Parse<'a> for TableAnnotation<'a> {
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        let sym = {
+            let _sym = parser.register_annotation("sym");
+            parser.step(|cursor| {
+                let start = cursor;
+                let (sym, _) = scan::scan_table_sym(cursor)?;
+                Ok((sym, start))
+            })?
+        };
+        let _: Table<'a> = parser.parse()?;
+        Ok(TableAnnotation { sym })
+    }
+}
+
+fn resolve_func_relocs(
     func: &Func<'_>,
     reloc_spans: &[Span],
-    linking: &mut HashSet<u32>,
-) -> Vec<bool> {
+    linking: &mut HashSet<SymbolKey>,
+) -> Vec<ParsedRelocInstruction> {
     let FuncKind::Inline { expression, .. } = &func.kind else {
         return Vec::new();
     };
@@ -285,13 +339,11 @@ fn resolve_func_calls(
     };
 
     let mut reloc_iter = reloc_spans.iter().copied().peekable();
-    let mut reloc_calls = Vec::new();
+    let mut reloc_instrs = Vec::new();
 
     for (i, instr) in expression.instrs.iter().enumerate() {
-        let target_func_index = match call_instr_callee(instr) {
-            Some(Index::Num(target_func_index, _)) => target_func_index,
-            Some(_) => panic!("expected function calls to be resolved to numeric indices"),
-            None => continue,
+        let Some(targets) = reloc_instruction_targets(instr) else {
+            continue;
         };
 
         let mut has_reloc = false;
@@ -301,26 +353,54 @@ fn resolve_func_calls(
             }
         }
         if has_reloc {
-            linking.insert(target_func_index);
+            linking.extend(targets.iter().copied());
         }
 
-        reloc_calls.push(has_reloc);
+        reloc_instrs.push(ParsedRelocInstruction { has_reloc, targets });
     }
 
     assert!(
         reloc_iter.next().is_none(),
-        "expected every `@reloc` to match a `call` or `return_call` instruction",
+        "expected every `@reloc` to match a relocatable instruction",
     );
 
-    reloc_calls
+    reloc_instrs
 }
 
-fn call_instr_callee<'a>(instr: &'a wast::core::Instruction<'a>) -> Option<Index<'a>> {
-    if let wast::core::Instruction::Call(index) | wast::core::Instruction::ReturnCall(index) = instr
-    {
-        Some(*index)
-    } else {
-        None
+fn reloc_instruction_targets(instr: &Instruction<'_>) -> Option<Vec<SymbolKey>> {
+    use wast::core::Instruction;
+
+    match instr {
+        Instruction::Call(call) | Instruction::ReturnCall(call) => {
+            Some(vec![SymbolKey::Function(index_as_u32(*call))])
+        }
+        Instruction::CallIndirect(call) | Instruction::ReturnCallIndirect(call) => {
+            Some(vec![SymbolKey::Table(index_as_u32(call.table))])
+        }
+        Instruction::TableGet(arg)
+        | Instruction::TableSet(arg)
+        | Instruction::TableFill(arg)
+        | Instruction::TableSize(arg)
+        | Instruction::TableGrow(arg) => Some(vec![SymbolKey::Table(index_as_u32(arg.dst))]),
+        Instruction::TableInit(init) => Some(vec![SymbolKey::Table(index_as_u32(init.table))]),
+        Instruction::TableCopy(copy) => Some(vec![
+            SymbolKey::Table(index_as_u32(copy.dst)),
+            SymbolKey::Table(index_as_u32(copy.src)),
+        ]),
+        Instruction::TableAtomicGet(arg)
+        | Instruction::TableAtomicSet(arg)
+        | Instruction::TableAtomicRmwXchg(arg)
+        | Instruction::TableAtomicRmwCmpxchg(arg) => {
+            Some(vec![SymbolKey::Table(index_as_u32(arg.inner.dst))])
+        }
+        _ => None,
+    }
+}
+
+fn index_as_u32(index: Index<'_>) -> u32 {
+    match index {
+        Index::Num(index, _) => index,
+        Index::Id(_) => panic!("expected indices to be resolved to numeric indices"),
     }
 }
 
@@ -329,11 +409,14 @@ fn build_link_info<'a>(
     rwat: &'a RelocWat<'a>,
     fields: &[ModuleField<'a>],
 ) -> Result<LinkInfo<'a>> {
-    let mut imports = Vec::new();
-    let mut defined = Vec::new();
+    let mut imported_functions = Vec::new();
+    let mut imported_tables = Vec::new();
+    let mut defined_funcs = Vec::new();
+    let mut defined_tables = Vec::new();
     let mut linking = HashSet::new();
     let mut import_annotations = rwat.import_annotations.iter();
     let mut func_annotations = rwat.func_annotations.iter();
+    let mut table_annotations = rwat.table_annotations.iter();
 
     for field in fields {
         match field {
@@ -346,11 +429,24 @@ fn build_link_info<'a>(
                     .into_iter()
                     .zip(annotation.syms.iter().copied())
                 {
-                    if matches!(&sig.kind, ItemKind::Func(_) | ItemKind::FuncExact(_)) {
-                        if sym.is_some() {
-                            linking.insert(u32::try_from(imports.len()).unwrap());
+                    match &sig.kind {
+                        ItemKind::Func(_) | ItemKind::FuncExact(_) => {
+                            if sym.is_some() {
+                                linking.insert(SymbolKey::Function(
+                                    u32::try_from(imported_functions.len()).unwrap(),
+                                ));
+                            }
+                            imported_functions.push(sym);
                         }
-                        imports.push(sym);
+                        ItemKind::Table(_) => {
+                            if sym.is_some() {
+                                linking.insert(SymbolKey::Table(
+                                    u32::try_from(imported_tables.len()).unwrap(),
+                                ));
+                            }
+                            imported_tables.push(sym);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -362,16 +458,45 @@ fn build_link_info<'a>(
                     Some(Some(name)) => Some(name),
                     Some(None) | None => func.id.as_ref().map(|id| id.name()),
                 };
-                let reloc_calls = resolve_func_calls(func, &annotation.reloc_spans, &mut linking);
-                let index = u32::try_from(imports.len() + defined.len()).unwrap();
+                let reloc_instrs = resolve_func_relocs(func, &annotation.reloc_spans, &mut linking);
+                let index = u32::try_from(imported_functions.len() + defined_funcs.len()).unwrap();
                 if annotation.sym.is_some() {
-                    linking.insert(index);
+                    linking.insert(SymbolKey::Function(index));
                 }
-                defined.push(DefinedFunc {
+                defined_funcs.push(DefinedFunc {
                     symbol_name,
-                    reloc_calls,
+                    reloc_instrs,
                     span: func.span,
                 });
+            }
+            ModuleField::Table(table) => {
+                let annotation = table_annotations
+                    .next()
+                    .expect("expected table annotations to line up with resolved module tables");
+                let symbol_name = match annotation.sym {
+                    Some(Some(name)) => Some(name),
+                    Some(None) | None => table.id.as_ref().map(|id| id.name()),
+                };
+                match &table.kind {
+                    TableKind::Import { .. } => {
+                        let index = u32::try_from(imported_tables.len()).unwrap();
+                        if annotation.sym.is_some() {
+                            linking.insert(SymbolKey::Table(index));
+                        }
+                        imported_tables.push(annotation.sym);
+                    }
+                    _ => {
+                        let index =
+                            u32::try_from(imported_tables.len() + defined_tables.len()).unwrap();
+                        if annotation.sym.is_some() {
+                            linking.insert(SymbolKey::Table(index));
+                        }
+                        defined_tables.push(DefinedTable {
+                            symbol_name,
+                            span: table.span,
+                        });
+                    }
+                }
             }
             _ => continue,
         }
@@ -385,30 +510,41 @@ fn build_link_info<'a>(
         func_annotations.next().is_none(),
         "all function annotations should be consumed",
     );
+    assert!(
+        table_annotations.next().is_none(),
+        "all table annotations should be consumed",
+    );
 
-    let num_imports = u32::try_from(imports.len()).unwrap();
+    let num_imports = u32::try_from(imported_functions.len()).unwrap();
+    let num_imported_tables = u32::try_from(imported_tables.len()).unwrap();
 
     let mut symbols = Vec::new();
     let mut symbol_indices = HashMap::new();
 
-    for (index, sym) in imports.iter().enumerate() {
+    for (index, sym) in imported_functions.iter().enumerate() {
         let index = u32::try_from(index).unwrap();
-        if !linking.contains(&index) {
+        if !linking.contains(&SymbolKey::Function(index)) {
             continue;
         }
-        symbol_indices.insert(index, u32::try_from(symbols.len()).unwrap());
-        symbols.push(FunctionSymbol::Import {
+        symbol_indices.insert(
+            SymbolKey::Function(index),
+            u32::try_from(symbols.len()).unwrap(),
+        );
+        symbols.push(Symbol::FunctionImport {
             index,
             explicit_name: sym.unwrap_or(None),
         });
     }
 
-    for (offset, func) in defined.iter().enumerate() {
+    for (offset, func) in defined_funcs.iter().enumerate() {
         let index = num_imports + u32::try_from(offset).unwrap();
-        if !linking.contains(&index) {
+        if !linking.contains(&SymbolKey::Function(index)) {
             continue;
         }
-        symbol_indices.insert(index, u32::try_from(symbols.len()).unwrap());
+        symbol_indices.insert(
+            SymbolKey::Function(index),
+            u32::try_from(symbols.len()).unwrap(),
+        );
         let Some(symbol_name) = func.symbol_name else {
             return Err(error(
                 wat,
@@ -416,13 +552,44 @@ fn build_link_info<'a>(
                 "defined function symbols require an explicit `@sym (name ...)` or function identifier",
             ));
         };
-        symbols.push(FunctionSymbol::Defined { index, symbol_name });
+        symbols.push(Symbol::FunctionDefined { index, symbol_name });
+    }
+
+    for (index, sym) in imported_tables.iter().enumerate() {
+        let index = u32::try_from(index).unwrap();
+        symbol_indices.insert(
+            SymbolKey::Table(index),
+            u32::try_from(symbols.len()).unwrap(),
+        );
+        symbols.push(Symbol::TableImport {
+            index,
+            explicit_name: sym.unwrap_or(None),
+        });
+    }
+
+    for (offset, table) in defined_tables.iter().enumerate() {
+        let index = num_imported_tables + u32::try_from(offset).unwrap();
+        if !linking.contains(&SymbolKey::Table(index)) {
+            continue;
+        }
+        symbol_indices.insert(
+            SymbolKey::Table(index),
+            u32::try_from(symbols.len()).unwrap(),
+        );
+        let Some(symbol_name) = table.symbol_name else {
+            return Err(error(
+                wat,
+                table.span,
+                "defined table symbols require an explicit `@sym (name ...)` or table identifier",
+            ));
+        };
+        symbols.push(Symbol::TableDefined { index, symbol_name });
     }
 
     Ok(LinkInfo {
         symbols,
         symbol_indices,
-        defined_funcs: defined,
+        defined_funcs,
     })
 }
 
@@ -463,7 +630,7 @@ fn patch_code_section(
             .get(body_index)
             .expect("expected code section bodies to line up with defined functions");
 
-        let patches = call_patches(&body, func);
+        let patches = reloc_patches(&body, func);
         let mut patched_body = Vec::with_capacity(body.as_bytes().len() + patches.len() * 4);
         let mut body_relocations = Vec::with_capacity(patches.len());
         let mut cursor = 0usize;
@@ -471,12 +638,15 @@ fn patch_code_section(
 
         for patch in patches {
             patched_body.extend_from_slice(&body.as_bytes()[cursor..patch.immediate_start]);
-            // call => call leb<index>
-            encode_5_byte_u32_leb(patch.target_func_index, &mut patched_body);
+            let target_index = match patch.target {
+                SymbolKey::Function(index) | SymbolKey::Table(index) => index,
+            };
+            encode_5_byte_u32_leb(target_index, &mut patched_body);
             body_relocations.push(CodeRelocation {
                 // Still relative to the current function body; adjusted to code-section offset below.
                 offset: u32::try_from(patch.immediate_start + shift).unwrap(),
-                target_func_index: patch.target_func_index,
+                reloc_type: patch.reloc_type,
+                target: patch.target,
             });
             // Offset within the original body bytes.
             cursor = patch.immediate_start + patch.original_len;
@@ -515,47 +685,150 @@ fn patch_code_section(
 struct CallPatch {
     immediate_start: usize,
     original_len: usize,
-    target_func_index: u32,
+    reloc_type: u8,
+    target: SymbolKey,
 }
 
-fn call_patches(body: &FunctionBody<'_>, func: &DefinedFunc<'_>) -> Vec<CallPatch> {
+fn reloc_patches(body: &FunctionBody<'_>, func: &DefinedFunc<'_>) -> Vec<CallPatch> {
     let mut patches = Vec::new();
-    let mut reloc_calls = func.reloc_calls.iter().copied();
+    let mut reloc_instrs = func.reloc_instrs.iter();
     let mut reader = body
         .get_operators_reader()
         .expect("expected generated function bodies to decode successfully");
 
     while !reader.eof() {
-        let (operator, offset) = reader
-            .read_with_offset()
+        let offset = reader.original_position();
+        let operator = reader
+            .read()
             .expect("expected generated operators to decode successfully");
 
-        let function_index = match operator {
-            Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
-                function_index
-            }
-            _ => continue,
+        let Some(instr_patches) = operator_reloc_patches(&operator, offset, body.range().start)
+        else {
+            continue;
         };
 
-        let has_reloc = reloc_calls
-            .next()
-            .expect("expected compiled wasm calls to line up with the parsed AST");
-        if has_reloc {
-            patches.push(CallPatch {
-                // Offset of the call immediate relative to the current function body.
-                immediate_start: (offset + 1).saturating_sub(body.range().start),
-                original_len: u32_leb_len(function_index),
-                target_func_index: function_index,
-            });
+        let reloc_instr = reloc_instrs.next().expect(
+            "expected compiled wasm relocatable instructions to line up with the parsed AST",
+        );
+
+        if reloc_instr.has_reloc {
+            patches.extend(instr_patches);
         }
     }
 
     assert!(
-        reloc_calls.next().is_none(),
-        "expected compiled wasm calls to line up with the parsed AST",
+        reloc_instrs.next().is_none(),
+        "expected compiled wasm relocatable instructions to line up with the parsed AST",
     );
 
     patches
+}
+
+fn operator_reloc_patches(
+    operator: &Operator<'_>,
+    offset: usize,
+    body_start: usize,
+) -> Option<Vec<CallPatch>> {
+    fn body_relative(offset: usize, body_start: usize) -> usize {
+        offset.saturating_sub(body_start)
+    }
+
+    fn prefixed_start(offset: usize, subopcode: u32, body_start: usize) -> usize {
+        body_relative(offset + 1 + u32_leb_len(subopcode), body_start)
+    }
+
+    match *operator {
+        Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
+            Some(vec![CallPatch {
+                immediate_start: body_relative(offset + 1, body_start),
+                original_len: u32_leb_len(function_index),
+                reloc_type: RELOC_FUNCTION_INDEX_LEB,
+                target: SymbolKey::Function(function_index),
+            }])
+        }
+        Operator::CallIndirect {
+            type_index,
+            table_index,
+        }
+        | Operator::ReturnCallIndirect {
+            type_index,
+            table_index,
+        } => Some(vec![CallPatch {
+            immediate_start: body_relative(offset + 1 + u32_leb_len(type_index), body_start),
+            original_len: u32_leb_len(table_index),
+            reloc_type: RELOC_TABLE_NUMBER_LEB,
+            target: SymbolKey::Table(table_index),
+        }]),
+        Operator::TableGet { table } | Operator::TableSet { table } => Some(vec![CallPatch {
+            immediate_start: body_relative(offset + 1, body_start),
+            original_len: u32_leb_len(table),
+            reloc_type: RELOC_TABLE_NUMBER_LEB,
+            target: SymbolKey::Table(table),
+        }]),
+        Operator::TableInit { elem_index, table } => Some(vec![CallPatch {
+            immediate_start: prefixed_start(offset, 0x0c, body_start) + u32_leb_len(elem_index),
+            original_len: u32_leb_len(table),
+            reloc_type: RELOC_TABLE_NUMBER_LEB,
+            target: SymbolKey::Table(table),
+        }]),
+        Operator::TableCopy {
+            dst_table,
+            src_table,
+        } => {
+            let first_immediate_start = prefixed_start(offset, 0x0e, body_start);
+            Some(vec![
+                CallPatch {
+                    immediate_start: first_immediate_start,
+                    original_len: u32_leb_len(dst_table),
+                    reloc_type: RELOC_TABLE_NUMBER_LEB,
+                    target: SymbolKey::Table(dst_table),
+                },
+                CallPatch {
+                    immediate_start: first_immediate_start + u32_leb_len(dst_table),
+                    original_len: u32_leb_len(src_table),
+                    reloc_type: RELOC_TABLE_NUMBER_LEB,
+                    target: SymbolKey::Table(src_table),
+                },
+            ])
+        }
+        Operator::TableFill { table }
+        | Operator::TableSize { table }
+        | Operator::TableGrow { table } => Some(vec![CallPatch {
+            immediate_start: prefixed_start(
+                offset,
+                match operator {
+                    Operator::TableFill { .. } => 0x11,
+                    Operator::TableSize { .. } => 0x10,
+                    Operator::TableGrow { .. } => 0x0f,
+                    _ => unreachable!(),
+                },
+                body_start,
+            ),
+            original_len: u32_leb_len(table),
+            reloc_type: RELOC_TABLE_NUMBER_LEB,
+            target: SymbolKey::Table(table),
+        }]),
+        Operator::TableAtomicGet { table_index, .. }
+        | Operator::TableAtomicSet { table_index, .. }
+        | Operator::TableAtomicRmwXchg { table_index, .. }
+        | Operator::TableAtomicRmwCmpxchg { table_index, .. } => Some(vec![CallPatch {
+            immediate_start: prefixed_start(
+                offset,
+                match operator {
+                    Operator::TableAtomicGet { .. } => 0x58,
+                    Operator::TableAtomicSet { .. } => 0x59,
+                    Operator::TableAtomicRmwXchg { .. } => 0x5a,
+                    Operator::TableAtomicRmwCmpxchg { .. } => 0x5b,
+                    _ => unreachable!(),
+                },
+                body_start,
+            ) + 1,
+            original_len: u32_leb_len(table_index),
+            reloc_type: RELOC_TABLE_NUMBER_LEB,
+            target: SymbolKey::Table(table_index),
+        }]),
+        _ => None,
+    }
 }
 
 fn linking_section(link_info: &LinkInfo<'_>) -> Option<LinkingSection> {
@@ -567,7 +840,7 @@ fn linking_section(link_info: &LinkInfo<'_>) -> Option<LinkingSection> {
     let mut symbols = SymbolTable::new();
     for symbol in &link_info.symbols {
         match *symbol {
-            FunctionSymbol::Import {
+            Symbol::FunctionImport {
                 index,
                 explicit_name,
             } => {
@@ -582,8 +855,21 @@ fn linking_section(link_info: &LinkInfo<'_>) -> Option<LinkingSection> {
                 }
                 symbols.function(flags, index, explicit_name);
             }
-            FunctionSymbol::Defined { index, symbol_name } => {
+            Symbol::FunctionDefined { index, symbol_name } => {
                 symbols.function(0, index, Some(symbol_name));
+            }
+            Symbol::TableImport {
+                index,
+                explicit_name,
+            } => {
+                let mut flags = SymbolTable::WASM_SYM_UNDEFINED;
+                if explicit_name.is_some() {
+                    flags |= SymbolTable::WASM_SYM_EXPLICIT_NAME;
+                }
+                symbols.table(flags, index, explicit_name);
+            }
+            Symbol::TableDefined { index, symbol_name } => {
+                symbols.table(0, index, Some(symbol_name));
             }
         }
     }
@@ -608,11 +894,11 @@ fn encode_reloc_code_section(
         .encode(&mut data);
 
     for reloc in &code.relocations {
-        data.push(RELOC_FUNCTION_INDEX_LEB);
+        data.push(reloc.reloc_type);
         // offset of the reloc index
         reloc.offset.encode(&mut data);
         // the index of the reloc symbol
-        link_info.symbol_indices[&reloc.target_func_index].encode(&mut data);
+        link_info.symbol_indices[&reloc.target].encode(&mut data);
     }
 
     Some(data)
