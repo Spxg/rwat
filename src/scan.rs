@@ -2,16 +2,17 @@ use wast::parser::Cursor;
 use wast::parser::Result;
 use wast::token::Span;
 
+use crate::reloc::is_relocatable_keyword;
+use crate::types::SymbolAnnotation;
+
 // Example:
 // `(func $f (@sym (name "foo")) (result i32) i32.const 0)`
-//  -> `Some(Some("foo"))`
+//  -> `Explicit("foo")`
 // `(func $f (@sym) (result i32) i32.const 0)`
-//  -> `Some(None)`
+//  -> `Inferred`
 // `(func $f (result i32) i32.const 0)`
-//  -> `None`
-pub(crate) fn scan_func_sym<'a>(
-    cursor: Cursor<'a>,
-) -> Result<(Option<Option<&'a str>>, Cursor<'a>)> {
+//  -> `Missing`
+pub(crate) fn scan_func_sym<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor<'a>)> {
     let cursor = expect_keyword(cursor, "func")?;
     let cursor = if let Some((_, next)) = cursor.id()? {
         next
@@ -23,14 +24,12 @@ pub(crate) fn scan_func_sym<'a>(
 
 // Example:
 // `(table $t (@sym (name "tab")) 1 externref)`
-//  -> `Some(Some("tab"))`
+//  -> `Explicit("tab")`
 // `(table $t (@sym) 1 externref)`
-//  -> `Some(None)`
+//  -> `Inferred`
 // `(table $t 1 externref)`
-//  -> `None`
-pub(crate) fn scan_table_sym<'a>(
-    cursor: Cursor<'a>,
-) -> Result<(Option<Option<&'a str>>, Cursor<'a>)> {
+//  -> `Missing`
+pub(crate) fn scan_table_sym<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor<'a>)> {
     let cursor = expect_keyword(cursor, "table")?;
     let cursor = if let Some((_, next)) = cursor.id()? {
         next
@@ -42,16 +41,16 @@ pub(crate) fn scan_table_sym<'a>(
 
 // Example:
 // `(import "env" "f" (func $f (@sym (name "foo"))))`
-//  -> `[Some(Some("foo"))]`
+//  -> `[Explicit("foo")]`
 // `(import "env" "t" (table $t (@sym (name "tab")) 1 externref))`
-//  -> `[Some(Some("tab"))]`
+//  -> `[Explicit("tab")]`
 // `(import "env" (item "f" (func $f (@sym))) (item "g" (memory 1)))`
-//  -> `[Some(None), None]`
+//  -> `[Inferred, Missing]`
 // `(import "env" (item "f") (item "g") (func))`
-//  -> `[None, None]`
+//  -> `[Missing, Missing]`
 pub(crate) fn scan_import_syms<'a>(
     cursor: Cursor<'a>,
-) -> Result<(Vec<Option<Option<&'a str>>>, Cursor<'a>)> {
+) -> Result<(Vec<SymbolAnnotation<'a>>, Cursor<'a>)> {
     let cursor = expect_keyword(cursor, "import")?;
     let (_, cursor) = expect_string(cursor)?;
 
@@ -78,10 +77,10 @@ pub(crate) fn scan_import_syms<'a>(
 
     if item_syms.iter().all(|(has_sig, _)| !*has_sig) {
         let (sym, cursor) = scan_item_sig(cursor)?;
-        if sym.is_some() {
+        if sym.is_present() {
             return Err(cursor.error("`@sym` is not allowed on group2 imports"));
         }
-        return Ok((vec![None; item_syms.len()], cursor));
+        return Ok((vec![SymbolAnnotation::Missing; item_syms.len()], cursor));
     }
 
     Err(cursor.error("unexpected `)`"))
@@ -139,27 +138,6 @@ pub(crate) fn scan_func_reloc_spans<'a>(mut cursor: Cursor<'a>) -> Result<(Vec<S
     Ok((relocs, cursor))
 }
 
-fn is_relocatable_keyword(keyword: &str) -> bool {
-    matches!(
-        keyword,
-        "call"
-            | "return_call"
-            | "call_indirect"
-            | "return_call_indirect"
-            | "table.get"
-            | "table.set"
-            | "table.init"
-            | "table.copy"
-            | "table.fill"
-            | "table.size"
-            | "table.grow"
-            | "table.atomic.get"
-            | "table.atomic.set"
-            | "table.atomic.rmw.xchg"
-            | "table.atomic.rmw.cmpxchg"
-    )
-}
-
 fn peek_group_item(cursor: Cursor<'_>) -> Result<bool> {
     let Some(cursor) = cursor.lparen()? else {
         return Ok(false);
@@ -170,13 +148,13 @@ fn peek_group_item(cursor: Cursor<'_>) -> Result<bool> {
     Ok(keyword == "item")
 }
 
-fn scan_group_item<'a>(cursor: Cursor<'a>) -> Result<(bool, Option<Option<&'a str>>, Cursor<'a>)> {
+fn scan_group_item<'a>(cursor: Cursor<'a>) -> Result<(bool, SymbolAnnotation<'a>, Cursor<'a>)> {
     let cursor = expect_lparen(cursor)?;
     let cursor = expect_keyword(cursor, "item")?;
     let (_, cursor) = expect_string(cursor)?;
 
     if let Some(cursor) = cursor.rparen()? {
-        return Ok((false, None, cursor));
+        return Ok((false, SymbolAnnotation::Missing, cursor));
     }
 
     let (sym, cursor) = scan_item_sig(cursor)?;
@@ -186,20 +164,20 @@ fn scan_group_item<'a>(cursor: Cursor<'a>) -> Result<(bool, Option<Option<&'a st
 
 // Example:
 // `(func $f (@sym (name "foo")) (type 0))`
-//  -> `Some(Some("foo"))`
+//  -> `Explicit("foo")`
 // `(func $f (@sym) (type 0))`
-//  -> `Some(None)`
+//  -> `Inferred`
 // `(table $t (@sym (name "tab")) 1 externref)`
-//  -> `Some(Some("tab"))`
+//  -> `Explicit("tab")`
 // `(memory 1)`
-//  -> `None`
-fn scan_item_sig<'a>(cursor: Cursor<'a>) -> Result<(Option<Option<&'a str>>, Cursor<'a>)> {
+//  -> `Missing`
+fn scan_item_sig<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor<'a>)> {
     let cursor = expect_lparen(cursor)?;
     let Some((kind, mut cursor)) = cursor.keyword()? else {
         return Err(cursor.error("expected an import type"));
     };
 
-    let mut sym = None;
+    let mut sym = SymbolAnnotation::Missing;
     if kind == "func" || kind == "table" {
         if let Some((_, next)) = cursor.id()? {
             cursor = next;
@@ -214,33 +192,33 @@ fn scan_item_sig<'a>(cursor: Cursor<'a>) -> Result<(Option<Option<&'a str>>, Cur
 }
 
 // Example:
-// `(@sym (name "foo"))` -> `Some(Some("foo"))`
-// `(@sym)` -> `Some(None)`
-// `(type 0)` -> `None`
-fn scan_sym_annotation<'a>(cursor: Cursor<'a>) -> Result<(Option<Option<&'a str>>, Cursor<'a>)> {
+// `(@sym (name "foo"))` -> `Explicit("foo")`
+// `(@sym)` -> `Inferred`
+// `(type 0)` -> `Missing`
+fn scan_sym_annotation<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor<'a>)> {
     let start = cursor;
     let Some(cursor) = cursor.lparen()? else {
-        return Ok((None, cursor));
+        return Ok((SymbolAnnotation::Missing, cursor));
     };
     let Some((annotation, cursor)) = cursor.annotation()? else {
-        return Ok((None, start));
+        return Ok((SymbolAnnotation::Missing, start));
     };
     if annotation != "sym" {
-        return Ok((None, start));
+        return Ok((SymbolAnnotation::Missing, start));
     }
 
     let (name, cursor) = if let Some(cursor) = cursor.rparen()? {
-        return Ok((Some(None), cursor));
+        return Ok((SymbolAnnotation::Inferred, cursor));
     } else {
         let cursor = expect_lparen(cursor)?;
         let cursor = expect_keyword(cursor, "name")?;
         let (name, cursor) = expect_utf8_string(cursor)?;
         let cursor = expect_rparen(cursor)?;
         let cursor = expect_rparen(cursor)?;
-        (Some(name), cursor)
+        (name, cursor)
     };
 
-    Ok((Some(name), cursor))
+    Ok((SymbolAnnotation::Explicit(name), cursor))
 }
 
 fn skip_until_rparen<'a>(mut cursor: Cursor<'a>) -> Result<Cursor<'a>> {
@@ -252,31 +230,7 @@ fn skip_until_rparen<'a>(mut cursor: Cursor<'a>) -> Result<Cursor<'a>> {
             cursor = skip_until_rparen(cursor2)?;
             continue;
         }
-        if let Some((_, cursor2)) = cursor.id()? {
-            cursor = cursor2;
-            continue;
-        }
-        if let Some((_, cursor2)) = cursor.keyword()? {
-            cursor = cursor2;
-            continue;
-        }
-        if let Some((_, cursor2)) = cursor.reserved()? {
-            cursor = cursor2;
-            continue;
-        }
-        if let Some((_, cursor2)) = cursor.integer()? {
-            cursor = cursor2;
-            continue;
-        }
-        if let Some((_, cursor2)) = cursor.float()? {
-            cursor = cursor2;
-            continue;
-        }
-        if let Some((_, cursor2)) = cursor.string()? {
-            cursor = cursor2;
-            continue;
-        }
-        if let Some((_, cursor2)) = cursor.annotation()? {
+        if let Some(cursor2) = advance_non_paren_token(cursor)? {
             cursor = cursor2;
             continue;
         }
@@ -285,24 +239,26 @@ fn skip_until_rparen<'a>(mut cursor: Cursor<'a>) -> Result<Cursor<'a>> {
 }
 
 fn advance_cursor<'a>(cursor: Cursor<'a>) -> Result<Option<Cursor<'a>>> {
-    if let Some((_, next)) = cursor.annotation()? {
-        return Ok(Some(next));
+    advance_non_paren_token(cursor)
+}
+
+fn advance_non_paren_token<'a>(cursor: Cursor<'a>) -> Result<Option<Cursor<'a>>> {
+    macro_rules! advance {
+        ($method:ident) => {
+            if let Some((_, next)) = cursor.$method()? {
+                return Ok(Some(next));
+            }
+        };
     }
-    if let Some((_, next)) = cursor.id()? {
-        return Ok(Some(next));
-    }
-    if let Some((_, next)) = cursor.reserved()? {
-        return Ok(Some(next));
-    }
-    if let Some((_, next)) = cursor.integer()? {
-        return Ok(Some(next));
-    }
-    if let Some((_, next)) = cursor.float()? {
-        return Ok(Some(next));
-    }
-    if let Some((_, next)) = cursor.string()? {
-        return Ok(Some(next));
-    }
+
+    advance!(annotation);
+    advance!(id);
+    advance!(keyword);
+    advance!(reserved);
+    advance!(integer);
+    advance!(float);
+    advance!(string);
+
     Ok(None)
 }
 
@@ -345,21 +301,32 @@ mod tests {
     use wast::parser::ParseBuffer;
     use wast::parser::Parser;
 
-    fn into_owned(sym: Option<Option<&str>>) -> Option<Option<String>> {
-        sym.map(|name| name.map(str::to_owned))
+    #[derive(Debug, PartialEq, Eq)]
+    enum OwnedSymbolAnnotation {
+        Missing,
+        Inferred,
+        Explicit(String),
     }
 
-    fn parse_func_sym(src: &str) -> Option<Option<String>> {
+    fn into_owned(sym: SymbolAnnotation<'_>) -> OwnedSymbolAnnotation {
+        match sym {
+            SymbolAnnotation::Missing => OwnedSymbolAnnotation::Missing,
+            SymbolAnnotation::Inferred => OwnedSymbolAnnotation::Inferred,
+            SymbolAnnotation::Explicit(name) => OwnedSymbolAnnotation::Explicit(name.to_owned()),
+        }
+    }
+
+    fn parse_func_sym(src: &str) -> OwnedSymbolAnnotation {
         let buf = ParseBuffer::new(src).unwrap();
         into_owned(parser::parse::<FuncSym<'_>>(&buf).unwrap().0)
     }
 
-    fn parse_table_sym(src: &str) -> Option<Option<String>> {
+    fn parse_table_sym(src: &str) -> OwnedSymbolAnnotation {
         let buf = ParseBuffer::new(src).unwrap();
         into_owned(parser::parse::<TableSym<'_>>(&buf).unwrap().0)
     }
 
-    fn parse_import_syms(src: &str) -> Vec<Option<Option<String>>> {
+    fn parse_import_syms(src: &str) -> Vec<OwnedSymbolAnnotation> {
         let buf = ParseBuffer::new(src).unwrap();
         parser::parse::<ImportSyms<'_>>(&buf)
             .unwrap()
@@ -390,17 +357,17 @@ mod tests {
         }
     }
 
-    fn parse_item_sig(src: &str) -> Option<Option<String>> {
+    fn parse_item_sig(src: &str) -> OwnedSymbolAnnotation {
         let buf = ParseBuffer::new(src).unwrap();
         into_owned(parser::parse::<ItemSig<'_>>(&buf).unwrap().0)
     }
 
-    fn parse_sym_annotation(src: &str) -> Option<Option<String>> {
+    fn parse_sym_annotation(src: &str) -> OwnedSymbolAnnotation {
         let buf = ParseBuffer::new(src).unwrap();
         into_owned(parser::parse::<SymAnnotation<'_>>(&buf).unwrap().0)
     }
 
-    struct FuncSym<'a>(Option<Option<&'a str>>);
+    struct FuncSym<'a>(SymbolAnnotation<'a>);
 
     impl<'a> Parse<'a> for FuncSym<'a> {
         fn parse(parser: Parser<'a>) -> Result<Self> {
@@ -412,7 +379,7 @@ mod tests {
         }
     }
 
-    struct ImportSyms<'a>(Vec<Option<Option<&'a str>>>);
+    struct ImportSyms<'a>(Vec<SymbolAnnotation<'a>>);
 
     impl<'a> Parse<'a> for ImportSyms<'a> {
         fn parse(parser: Parser<'a>) -> Result<Self> {
@@ -437,9 +404,9 @@ mod tests {
         }
     }
 
-    struct ItemSig<'a>(Option<Option<&'a str>>);
+    struct ItemSig<'a>(SymbolAnnotation<'a>);
 
-    struct TableSym<'a>(Option<Option<&'a str>>);
+    struct TableSym<'a>(SymbolAnnotation<'a>);
 
     impl<'a> Parse<'a> for ItemSig<'a> {
         fn parse(parser: Parser<'a>) -> Result<Self> {
@@ -462,14 +429,14 @@ mod tests {
         }
     }
 
-    struct SymAnnotation<'a>(Option<Option<&'a str>>);
+    struct SymAnnotation<'a>(SymbolAnnotation<'a>);
 
     impl<'a> Parse<'a> for SymAnnotation<'a> {
         fn parse(parser: Parser<'a>) -> Result<Self> {
             let _sym = parser.register_annotation("sym");
             let sym = parser.step(|cursor| {
                 let (sym, cursor) = scan_sym_annotation(cursor)?;
-                let cursor = if sym.is_none() {
+                let cursor = if sym == SymbolAnnotation::Missing {
                     let cursor = expect_lparen(cursor)?;
                     skip_until_rparen(cursor)?
                 } else {
@@ -485,44 +452,59 @@ mod tests {
     fn test_scan_func_sym_examples() {
         assert_eq!(
             parse_func_sym(r#"(func $f (@sym (name "foo")))"#),
-            Some(Some("foo".into()))
+            OwnedSymbolAnnotation::Explicit("foo".into())
         );
-        assert_eq!(parse_func_sym(r#"(func $f (@sym))"#), Some(None));
-        assert_eq!(parse_func_sym(r#"(func $f)"#), None);
+        assert_eq!(
+            parse_func_sym(r#"(func $f (@sym))"#),
+            OwnedSymbolAnnotation::Inferred
+        );
+        assert_eq!(
+            parse_func_sym(r#"(func $f)"#),
+            OwnedSymbolAnnotation::Missing
+        );
     }
 
     #[test]
     fn test_scan_table_sym_examples() {
         assert_eq!(
             parse_table_sym(r#"(table $t (@sym (name "tab")) 1 externref)"#),
-            Some(Some("tab".into())),
+            OwnedSymbolAnnotation::Explicit("tab".into()),
         );
         assert_eq!(
             parse_table_sym(r#"(table $t (@sym) 1 externref)"#),
-            Some(None)
+            OwnedSymbolAnnotation::Inferred
         );
-        assert_eq!(parse_table_sym(r#"(table $t 1 externref)"#), None);
+        assert_eq!(
+            parse_table_sym(r#"(table $t 1 externref)"#),
+            OwnedSymbolAnnotation::Missing
+        );
     }
 
     #[test]
     fn test_scan_import_syms_examples() {
         assert_eq!(
             parse_import_syms(r#"(import "env" "f" (func $f (@sym (name "foo"))))"#),
-            vec![Some(Some("foo".into()))],
+            vec![OwnedSymbolAnnotation::Explicit("foo".into())],
         );
         assert_eq!(
             parse_import_syms(r#"(import "env" "t" (table $t (@sym (name "tab")) 1 externref))"#),
-            vec![Some(Some("tab".into()))],
+            vec![OwnedSymbolAnnotation::Explicit("tab".into())],
         );
         assert_eq!(
             parse_import_syms(
                 r#"(import "env" (item "f" (func $f (@sym))) (item "g" (memory 1)))"#
             ),
-            vec![Some(None), None],
+            vec![
+                OwnedSymbolAnnotation::Inferred,
+                OwnedSymbolAnnotation::Missing
+            ],
         );
         assert_eq!(
             parse_import_syms(r#"(import "env" (item "f") (item "g") (func))"#),
-            vec![None, None],
+            vec![
+                OwnedSymbolAnnotation::Missing,
+                OwnedSymbolAnnotation::Missing
+            ],
         );
     }
 
@@ -556,23 +538,35 @@ mod tests {
     fn test_scan_item_sig_examples() {
         assert_eq!(
             parse_item_sig(r#"(func $f (@sym (name "foo")) (type 0))"#),
-            Some(Some("foo".into()))
+            OwnedSymbolAnnotation::Explicit("foo".into())
         );
-        assert_eq!(parse_item_sig(r#"(func $f (@sym) (type 0))"#), Some(None));
+        assert_eq!(
+            parse_item_sig(r#"(func $f (@sym) (type 0))"#),
+            OwnedSymbolAnnotation::Inferred
+        );
         assert_eq!(
             parse_item_sig(r#"(table $t (@sym (name "tab")) 1 externref)"#),
-            Some(Some("tab".into())),
+            OwnedSymbolAnnotation::Explicit("tab".into()),
         );
-        assert_eq!(parse_item_sig(r#"(memory 1)"#), None);
+        assert_eq!(
+            parse_item_sig(r#"(memory 1)"#),
+            OwnedSymbolAnnotation::Missing
+        );
     }
 
     #[test]
     fn test_scan_sym_annotation_examples() {
         assert_eq!(
             parse_sym_annotation(r#"(@sym (name "foo"))"#),
-            Some(Some("foo".into()))
+            OwnedSymbolAnnotation::Explicit("foo".into())
         );
-        assert_eq!(parse_sym_annotation(r#"(@sym)"#), Some(None));
-        assert_eq!(parse_sym_annotation(r#"(type 0)"#), None);
+        assert_eq!(
+            parse_sym_annotation(r#"(@sym)"#),
+            OwnedSymbolAnnotation::Inferred
+        );
+        assert_eq!(
+            parse_sym_annotation(r#"(type 0)"#),
+            OwnedSymbolAnnotation::Missing
+        );
     }
 }
