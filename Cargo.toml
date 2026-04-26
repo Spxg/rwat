@@ -9,6 +9,10 @@ license = "MIT"
 keywords = ["wasm", "wat", "relocation", "linking"]
 categories = ["wasm"]
 
+[[bin]]
+name = "rwat"
+path = "src/main.rs"
+
 [dependencies]
 wasm-encoder = "0.247.0"
 wasmparser = "0.247.0"

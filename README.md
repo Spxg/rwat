@@ -60,59 +60,28 @@ patched code section
 final wasm object bytes
 ```
 
-## Why Not Patch `wast`?
+## Why Not Use `wast` Directly
 
-In principle, modifying `wast` directly would make this implementation simpler. This project does not take that route for a practical reason: these annotations are custom syntax, not part of the official WAT grammar and not tied to a standardized proposal. Because of that:
+`rwat` still uses `wast` for standard WAT parsing and encoding, but it cannot rely on `wast` alone for this extension:
 
-- `wast` exposes a fair amount of parser/encoder functionality only through private APIs, so an external crate cannot directly reuse some of the integration points that would make this approach practical,
+- `wast` does not understand `(@sym)` and `(@reloc)` as first-class syntax, because these annotations are custom to `rwat` rather than part of the official WAT grammar.
+- The parser/encoder integration points needed to preserve annotation metadata through encoding are mostly private APIs, so an external crate cannot directly plug this behavior into `wast`.
 - getting such changes accepted upstream in `wast` would be difficult,
 - carrying a private `wast` fork would create ongoing maintenance cost.
 
 ## Example
 
-Given this WAT:
+The [examples/add](examples/add) directory builds two WAT files separately, then links them with `wasm-ld`: `add.wat` defines the `add` symbol, and `main.wat` imports it, marks the call as relocatable, and defines `main(a, b)`.
 
-```wat
-(module (@rwat)
-  (type (func))
-  (import "env" "foo" (func $foo (@sym) (type 0)))
-  (func $bar (@sym (name "bar.sym")) (type 0)
-    call $foo (@reloc)
-  )
-)
+```sh
+cargo run -- examples/add/add.wat -o add.o
+cargo run -- examples/add/main.wat -o main.o
+wasm-ld --no-entry --export=main main.o add.o -o main.wasm
+wasmtime --invoke main main.wasm 20 22
 ```
 
-The generated wasm keeps the normal code section and also includes:
-
-- `linking`: symbol table metadata.
-- `reloc.CODE`: relocation records for function indices and table immediates in the code section.
+The final command prints:
 
 ```text
-wat.o:	file format wasm 0x1
-
-Section Details:
-
-Type[1]:
- - type[0] () -> nil
-Import[1]:
- - func[0] sig=0 <foo> <- env.foo
-Function[1]:
- - func[1] sig=0 <bar>
-Code[1]:
- - func[1] size=8 <bar>
-Custom:
- - name: "linking"
-  - symbol table [count=2]
-   - 0: F <foo> func=0 [ undefined binding=global vis=default ]
-   - 1: F <bar.sym> func=1 [ binding=global vis=default ]
-Custom:
- - name: "reloc.CODE"
-  - relocations for section: 3 (Code) [1]
-   - R_WASM_FUNCTION_INDEX_LEB offset=0x000004(file=0x000025) symbol=0 <foo>
-Custom:
- - name: "name"
- - func[0] <foo>
- - func[1] <bar>
+42
 ```
-
-For fuller input/output examples, see [tests/print.rs](tests/print.rs).
