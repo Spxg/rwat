@@ -1,3 +1,10 @@
+//! Command-line interface for parsing annotated wat into a relocatable wasm
+//! object file.
+//!
+//! The binary reads wat from a file or standard input, passes it to
+//! `rwat::parse_rwat`, and writes the resulting wasm bytes to the requested
+//! output path.
+
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -105,5 +112,5 @@ fn read_input(input: Input) -> Result<String, String> {
 }
 
 fn usage() -> String {
-    "usage: rwat [wat-file|-] -o|--output <wasm-file>\n\nReads WAT from a file, or stdin when no input file or `-` is given.".to_owned()
+    "usage: rwat [wat|-] -o|--output <wasm>\n\nReads wat from a file, or stdin when no input file or `-` is given.".to_owned()
 }

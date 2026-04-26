@@ -4,12 +4,12 @@ use crate::emit::{emit_module, raw_sections};
 use crate::link::{build_link_info, linking_section};
 use crate::scan;
 use crate::types::{FuncAnnotation, ParsedRelocFunc, RelocImports, RelocWat, TableAnnotation};
-use wast::core::{Func, FuncKind, Imports, ModuleField, ModuleKind, Table};
-use wast::kw;
+use wast::core::{Func, FuncKind, Imports, Module, ModuleField, ModuleKind, Table};
 use wast::parser::{self, Parse, ParseBuffer, Parser, Result};
 use wast::token::{Id, NameAnnotation, Span};
+use wast::{Wat, kw};
 
-/// Parses annotated WAT source into a wasm binary.
+/// Parses annotated wat into relocatable wasm file.
 ///
 /// The input must use the `rwat` extensions, including the required
 /// module-level `(@rwat)` annotation. On success, the returned bytes contain
@@ -22,7 +22,7 @@ pub fn parse_rwat(wat: &str) -> Result<Vec<u8>> {
 
     let mut buf = ParseBuffer::new(wat)?;
     buf.track_instr_spans(true);
-    let mut parsed = parser::parse::<wast::Wat>(&buf)?;
+    let mut parsed = parser::parse::<Wat>(&buf)?;
     let module = parse_text_module(wat, &mut parsed)?;
 
     let link_info = {
@@ -41,13 +41,10 @@ pub fn parse_rwat(wat: &str) -> Result<Vec<u8>> {
     Ok(emit_module(wasm, sections, patched_code, linking, reloc))
 }
 
-fn parse_text_module<'a>(
-    wat: &'a str,
-    parsed: &'a mut wast::Wat<'a>,
-) -> Result<&'a mut wast::core::Module<'a>> {
+fn parse_text_module<'a>(wat: &'a str, parsed: &'a mut Wat<'a>) -> Result<&'a mut Module<'a>> {
     let module = match parsed {
-        wast::Wat::Module(module) => module,
-        wast::Wat::Component(_) => {
+        Wat::Module(module) => module,
+        Wat::Component(_) => {
             return Err(error(
                 wat,
                 Span::from_offset(0),
@@ -68,7 +65,7 @@ fn parse_text_module<'a>(
             return Err(error(
                 wat,
                 module.span,
-                "input WAT already defines `linking`/`reloc.*` custom sections, but also uses `@sym`/`@reloc`; this combination is not supported yet",
+                "input wat already defines `linking`/`reloc.*` custom sections, but also uses `@sym`/`@reloc`; this combination is not supported yet",
             ));
         }
     }

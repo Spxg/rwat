@@ -2,7 +2,7 @@
 name = "rwat"
 version = "0.1.0"
 edition = "2024"
-description = "Parse annotated WAT into wasm relocation object"
+description = "Parse annotated wat into relocatable wasm file."
 repository = "https://github.com/Spxg/rwat"
 readme = "README.md"
 license = "MIT"
