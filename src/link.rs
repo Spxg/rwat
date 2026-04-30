@@ -2,10 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use wasm_encoder::{LinkingSection, SymbolTable};
 use wast::core::{Func, FuncKind, Imports, ItemKind, ModuleField, Table, TableKind};
-use wast::parser::Result;
 use wast::token::Id;
 
-use crate::parse::error;
+use crate::parse::{Result, error};
 use crate::reloc;
 use crate::types::{
     DefinedFunc, DefinedTable, FuncAnnotation, LinkInfo, ParsedRelocInstruction, RelocImports,

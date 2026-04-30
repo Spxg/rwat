@@ -1,7 +1,7 @@
 use wast::parser::Cursor;
-use wast::parser::Result;
 use wast::token::Span;
 
+use crate::parse::Result;
 use crate::reloc::is_relocatable_keyword;
 use crate::types::SymbolAnnotation;
 

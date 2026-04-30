@@ -5,9 +5,16 @@ use crate::link::{build_link_info, linking_section};
 use crate::scan;
 use crate::types::{FuncAnnotation, ParsedRelocFunc, RelocImports, RelocWat, TableAnnotation};
 use wast::core::{Func, FuncKind, Imports, Module, ModuleField, ModuleKind, Table};
-use wast::parser::{self, Parse, ParseBuffer, Parser, Result};
+use wast::parser::{self, Parse, ParseBuffer, Parser};
 use wast::token::{Id, NameAnnotation, Span};
 use wast::{Wat, kw};
+
+/// Re-export `wast`'s `Error`
+pub type Error = wast::Error;
+
+/// A convenience type definition for `Result` where the error is hardwired to
+/// [`Error`].
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Parses annotated wat into relocatable wasm file.
 ///

@@ -1,7 +1,7 @@
 use wasm_encoder::Encode;
 use wasmparser::{BinaryReader, CodeSectionReader, FunctionBody};
-use wast::parser::Result;
 
+use crate::parse::Result;
 use crate::reloc::{operator_patches, u32_leb_len};
 use crate::types::{
     CODE_SECTION_ID, CodeRelocation, DefinedFunc, LinkInfo, PatchedCodeSection, RawSection,

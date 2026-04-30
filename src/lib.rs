@@ -18,3 +18,4 @@ mod annotation {
 }
 
 pub use parse::parse_rwat;
+pub use parse::{Error, Result};
