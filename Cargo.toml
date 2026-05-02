@@ -1,6 +1,6 @@
 [package]
 name = "rwat"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Parse annotated wat into relocatable wasm file."
 repository = "https://github.com/Spxg/rwat"
