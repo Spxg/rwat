@@ -15,6 +15,7 @@ fn test_print_plain_module() {
     let expected = r#"(module
   (type (;0;) (func))
   (func (;0;) (type 0))
+  (@custom "linking" (after code) "\02")
 )
 "#;
     assert_eq!(actual, expected);
@@ -82,7 +83,12 @@ fn test_print_empty_module() {
             (module (@rwat))
         "#,
     );
-    assert_eq!(actual.trim_end(), "(module)");
+    assert_eq!(
+        actual.trim_end(),
+        r#"(module
+  (@custom "linking" (before first) "\02")
+)"#
+    );
 }
 
 #[test]

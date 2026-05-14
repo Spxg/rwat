@@ -69,6 +69,10 @@ fn emit_object_sections(
     // data section in order to validate data symbols.
     if let Some(linking) = linking {
         out.section(linking);
+    } else {
+        // Generate the linking section even when there
+        // is no link information.
+        out.section(&LinkingSection::new());
     }
     // The "reloc." custom sections must come after the
     // "linking" custom section in order to validate
