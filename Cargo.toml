@@ -14,11 +14,11 @@ name = "rwat"
 path = "src/main.rs"
 
 [dependencies]
-wasm-encoder = { version = "0.248.0", default-features = false }
-wasmparser = { version = "0.248.0", default-features = false }
-wast = { version = "248.0.0", default-features = false, features = [
+wasm-encoder = { version = "0.249.0", default-features = false }
+wasmparser = { version = "0.249.0", default-features = false }
+wast = { version = "249.0.0", default-features = false, features = [
   "wasm-module"
 ] }
 
 [dev-dependencies]
-wasmprinter = { version = "0.248.0", default-features = false }
+wasmprinter = { version = "0.249.0", default-features = false }
