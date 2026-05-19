@@ -3,6 +3,31 @@ fn print_wat(src: &str) -> String {
     wasmprinter::print_bytes(&wasm).unwrap()
 }
 
+fn has_custom_section(wasm: &[u8], name: &str) -> bool {
+    wasmparser::Parser::new(0).parse_all(wasm).any(|payload| {
+        matches!(
+            payload.unwrap(),
+            wasmparser::Payload::CustomSection(section) if section.name() == name
+        )
+    })
+}
+
+#[test]
+fn test_omit_name_section_option() {
+    let src = r#"
+        (module (@rwat)
+          (func $named)
+        )
+    "#;
+
+    let default_wasm = rwat::parse_rwat(src).unwrap();
+    assert!(has_custom_section(&default_wasm, "name"));
+
+    let omitted_wasm =
+        rwat::parse_rwat_with(rwat::ParseOptions::new(src).omit_name_section(true)).unwrap();
+    assert!(!has_custom_section(&omitted_wasm, "name"));
+}
+
 #[test]
 fn test_print_plain_module() {
     let actual = print_wat(

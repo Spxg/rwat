@@ -16,6 +16,28 @@ pub type Error = wast::Error;
 /// [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// Options used when parsing annotated wat input.
+pub struct ParseOptions<'a> {
+    wat: &'a str,
+    pub(crate) omit_name_section: bool,
+}
+
+impl<'a> ParseOptions<'a> {
+    /// Creates parse options for the provided wat input.
+    pub fn new(wat: &'a str) -> Self {
+        Self {
+            wat,
+            omit_name_section: false,
+        }
+    }
+
+    /// Controls whether the output should omit the wasm name section.
+    pub fn omit_name_section(&mut self, value: bool) -> &mut Self {
+        self.omit_name_section = value;
+        self
+    }
+}
+
 /// Parses annotated wat into relocatable wasm file.
 ///
 /// The input must use the `rwat` extensions, including the required
@@ -23,6 +45,13 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 /// the encoded wasm module plus the generated `linking` and `reloc.CODE`
 /// custom sections.
 pub fn parse_rwat(wat: &str) -> Result<Vec<u8>> {
+    parse_rwat_with(&ParseOptions::new(wat))
+}
+
+/// Parses annotated wat into relocatable wasm using explicit parse options.
+pub fn parse_rwat_with(options: &ParseOptions) -> Result<Vec<u8>> {
+    let wat = options.wat;
+
     let mut buf = ParseBuffer::new(wat)?;
     buf.track_instr_spans(true);
     let rwat = parser::parse::<RelocWat>(&buf)?;
@@ -40,7 +69,7 @@ pub fn parse_rwat(wat: &str) -> Result<Vec<u8>> {
     };
     let wasm = module.encode()?;
 
-    let sections = raw_sections(wasm.as_slice());
+    let sections = raw_sections(options, wasm.as_slice());
     let patched_code = patch_code_section(wasm.as_slice(), &sections, &link_info.defined_funcs)?;
     let linking = linking_section(&link_info);
     let reloc = encode_reloc_code_section(&link_info, patched_code.as_ref());

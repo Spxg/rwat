@@ -1,9 +1,12 @@
 use wasm_encoder::{
     CustomSection, LinkingSection, Module as WasmModule, RawSection as WasmRawSection,
 };
-use wasmparser::Parser as WasmParser;
+use wasmparser::{Parser as WasmParser, Payload};
 
-use crate::types::{CODE_SECTION_ID, PatchedCodeSection, RawSection};
+use crate::{
+    parse::ParseOptions,
+    types::{CODE_SECTION_ID, PatchedCodeSection, RawSection},
+};
 
 pub(crate) fn emit_module(
     wasm: Vec<u8>,
@@ -41,12 +44,18 @@ pub(crate) fn emit_module(
     out.finish()
 }
 
-pub(crate) fn raw_sections(wasm: &[u8]) -> Vec<RawSection> {
+pub(crate) fn raw_sections(options: &ParseOptions, wasm: &[u8]) -> Vec<RawSection> {
     let mut sections = Vec::new();
 
     for (index, (id, payload_range)) in
         (0u32..).zip(WasmParser::new(0).parse_all(wasm).filter_map(|payload| {
             let payload = payload.expect("expected generated wasm to parse successfully");
+            if options.omit_name_section
+                && let Payload::CustomSection(c) = &payload
+                && c.name() == "name"
+            {
+                return None;
+            }
             payload.as_section()
         }))
     {

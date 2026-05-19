@@ -17,5 +17,5 @@ mod annotation {
     wast::annotation!(rwat);
 }
 
-pub use parse::parse_rwat;
-pub use parse::{Error, Result};
+pub use parse::{Error, ParseOptions, Result};
+pub use parse::{parse_rwat, parse_rwat_with};
