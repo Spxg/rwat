@@ -8,6 +8,7 @@ readme = "README.md"
 license = "MIT"
 keywords = ["wasm", "wat", "relocation", "linking"]
 categories = ["wasm"]
+exclude = ["examples/**", "tests/**"]
 
 [[bin]]
 name = "rwat"
