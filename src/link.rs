@@ -340,6 +340,7 @@ fn resolve_func_relocs(
 
         let mut has_reloc = false;
         if let Some(instr_spans) = instr_spans {
+            // TODO: Decide whether repeated `@reloc` annotations on one instruction should error.
             while reloc_iter.next_if(|span| *span == instr_spans[i]).is_some() {
                 has_reloc = true;
             }

@@ -2,7 +2,7 @@ use wasm_encoder::Encode;
 use wasmparser::{BinaryReader, CodeSectionReader, FunctionBody};
 
 use crate::parse::Result;
-use crate::reloc::{operator_patches, u32_leb_len};
+use crate::reloc::{RelocPatch, operator_patches, u32_leb_len};
 use crate::types::{
     CODE_SECTION_ID, CodeRelocation, DefinedFunc, LinkInfo, PatchedCodeSection, RawSection,
 };
@@ -103,6 +103,7 @@ fn patch_function_body(
     func: &DefinedFunc<'_>,
 ) -> (Vec<u8>, Vec<CodeRelocation>) {
     let patches = reloc_patches(body, func);
+    // Each relocated immediate is rewritten as a 5-byte LEB128 value, growing by at most 4 bytes.
     let mut patched_body = Vec::with_capacity(body.as_bytes().len() + patches.len() * 4);
     let mut relocations = Vec::with_capacity(patches.len());
     let mut cursor = 0usize;
@@ -129,7 +130,7 @@ fn patch_function_body(
     (patched_body, relocations)
 }
 
-fn reloc_patches(body: &FunctionBody<'_>, func: &DefinedFunc<'_>) -> Vec<crate::reloc::RelocPatch> {
+fn reloc_patches(body: &FunctionBody<'_>, func: &DefinedFunc<'_>) -> Vec<RelocPatch> {
     let mut patches = Vec::new();
     let mut reloc_instrs = func.reloc_instrs.iter();
     let mut reader = body
