@@ -68,10 +68,9 @@ final wasm object bytes
 
 `rwat` still uses `wast` for standard wat parsing and encoding, but it cannot rely on `wast` alone for this extension:
 
-- `wast` does not understand `(@sym)` and `(@reloc)` as first-class syntax, because these annotations are custom to `rwat` rather than part of the official wat grammar.
-- The parser/encoder integration points needed to preserve annotation metadata through encoding are mostly private APIs, so an external crate cannot directly plug this behavior into `wast`.
-- getting such changes accepted upstream in `wast` would be difficult,
-- carrying a private `wast` fork would create ongoing maintenance cost.
+- `(@sym)` and `(@reloc)` are `rwat` annotations, not part of the official wat grammar, so `wast` does not parse them as first-class syntax.
+- Preserving those annotations through encoding would require parser and encoder integration points that are mostly private in `wast`.
+- Upstreaming this behavior would be difficult, and maintaining a private `wast` fork would add long-term maintenance cost.
 
 ## Example
 
