@@ -114,7 +114,7 @@ pub(crate) fn linking_section(link_info: &LinkInfo<'_>) -> Option<LinkingSection
 
 #[derive(Debug, Default)]
 struct LinkInfoBuilder<'a> {
-    imported_functions: Vec<SymbolAnnotation<'a>>,
+    imported_funcs: Vec<SymbolAnnotation<'a>>,
     imported_tables: Vec<SymbolAnnotation<'a>>,
     defined_funcs: Vec<DefinedFunc<'a>>,
     defined_tables: Vec<DefinedTable<'a>>,
@@ -164,9 +164,9 @@ impl<'a> LinkInfoBuilder<'a> {
     }
 
     fn push_imported_function(&mut self, sym: SymbolAnnotation<'a>) {
-        let index = u32::try_from(self.imported_functions.len()).unwrap();
+        let index = u32::try_from(self.imported_funcs.len()).unwrap();
         self.mark_function_if_present(index, sym);
-        self.imported_functions.push(sym);
+        self.imported_funcs.push(sym);
     }
 
     fn push_imported_table(&mut self, sym: SymbolAnnotation<'a>) {
@@ -176,7 +176,7 @@ impl<'a> LinkInfoBuilder<'a> {
     }
 
     fn next_defined_function_index(&self) -> u32 {
-        u32::try_from(self.imported_functions.len() + self.defined_funcs.len()).unwrap()
+        u32::try_from(self.imported_funcs.len() + self.defined_funcs.len()).unwrap()
     }
 
     fn next_defined_table_index(&self) -> u32 {
@@ -196,7 +196,7 @@ impl<'a> LinkInfoBuilder<'a> {
     }
 
     fn finish(self, wat: &'a str) -> Result<LinkInfo<'a>> {
-        let num_imported_functions = u32::try_from(self.imported_functions.len()).unwrap();
+        let num_imported_functions = u32::try_from(self.imported_funcs.len()).unwrap();
         let num_imported_tables = u32::try_from(self.imported_tables.len()).unwrap();
 
         let mut symbols = Vec::new();
@@ -229,7 +229,7 @@ impl<'a> LinkInfoBuilder<'a> {
         symbols: &mut Vec<Symbol<'a>>,
         symbol_indices: &mut HashMap<SymbolKey, u32>,
     ) {
-        for (index, sym) in self.imported_functions.iter().enumerate() {
+        for (index, sym) in self.imported_funcs.iter().enumerate() {
             let index = u32::try_from(index).unwrap();
             let key = SymbolKey::Function(index);
             if !self.linking.contains(&key) {
