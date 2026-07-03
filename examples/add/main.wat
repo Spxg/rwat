@@ -1,9 +1,0 @@
-(module (@rwat)
-  (import "env" "add" (func $add (@sym (name "add")) (param i32 i32) (result i32)))
-
-  (func $main (@sym (name "main")) (param i32 i32) (result i32)
-    local.get 0
-    local.get 1
-    call $add (@reloc)
-  )
-)

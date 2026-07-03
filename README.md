@@ -74,11 +74,11 @@ final wasm object bytes
 
 ## Example
 
-The [examples/add](examples/add) directory builds two wat files and links them with `lld`: `add.wat` defines the `add` symbol, and `main.wat` imports it, marks the call as relocatable, and defines `main(a, b)`.
+The [examples](examples) directory builds two wat files and links them with `lld`: `add.wat` defines the `add` symbol, and `main.wat` imports it, marks the call as relocatable, and defines `main(a, b)`.
 
 ```sh
 cargo install rwat --locked
-rwat examples/add/main.wat examples/add/add.wat -o main.wasm -Wl,--no-entry,--export=main
+rwat examples/main.wat examples/add.wat -o main.wasm -Wl,--no-entry,--export=main
 # 42
 wasmtime --invoke main main.wasm 20 22
 ```
