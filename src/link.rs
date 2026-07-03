@@ -235,7 +235,7 @@ impl<'a> LinkInfoBuilder<'a> {
             if !self.linking.contains(&key) {
                 continue;
             }
-            insert_symbol_index(symbol_indices, symbols.as_slice(), key);
+            symbol_indices.insert(key, u32::try_from(symbols.len()).unwrap());
             symbols.push(Symbol::FunctionImport {
                 index,
                 explicit_name: sym.explicit_name(),
@@ -256,7 +256,7 @@ impl<'a> LinkInfoBuilder<'a> {
             if !self.linking.contains(&key) {
                 continue;
             }
-            insert_symbol_index(symbol_indices, symbols.as_slice(), key);
+            symbol_indices.insert(key, u32::try_from(symbols.len()).unwrap());
             let Some(symbol_name) = func.symbol_name else {
                 return Err(error(
                     wat,
@@ -280,7 +280,7 @@ impl<'a> LinkInfoBuilder<'a> {
             if !self.linking.contains(&key) {
                 continue;
             }
-            insert_symbol_index(symbol_indices, symbols.as_slice(), key);
+            symbol_indices.insert(key, u32::try_from(symbols.len()).unwrap());
             symbols.push(Symbol::TableImport {
                 index,
                 explicit_name: sym.explicit_name(),
@@ -301,7 +301,7 @@ impl<'a> LinkInfoBuilder<'a> {
             if !self.linking.contains(&key) {
                 continue;
             }
-            insert_symbol_index(symbol_indices, symbols.as_slice(), key);
+            symbol_indices.insert(key, u32::try_from(symbols.len()).unwrap());
             let Some(symbol_name) = table.symbol_name else {
                 return Err(error(
                     wat,
@@ -364,12 +364,4 @@ fn inferred_symbol_name<'a>(sym: SymbolAnnotation<'a>, id: Option<&Id<'a>>) -> O
         SymbolAnnotation::Explicit(name) => Some(name),
         SymbolAnnotation::Missing | SymbolAnnotation::Inferred => id.map(Id::name),
     }
-}
-
-fn insert_symbol_index(
-    symbol_indices: &mut HashMap<SymbolKey, u32>,
-    symbols: &[Symbol<'_>],
-    key: SymbolKey,
-) {
-    symbol_indices.insert(key, u32::try_from(symbols.len()).unwrap());
 }
