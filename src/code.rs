@@ -46,7 +46,7 @@ pub(crate) fn patch_code_section(
         return Ok(None);
     };
 
-    let mut code_payload = Vec::new();
+    let mut code_payload = Vec::with_capacity(code_section.range.len());
     u32::try_from(defined_funcs.len())
         .unwrap()
         .encode(&mut code_payload);
