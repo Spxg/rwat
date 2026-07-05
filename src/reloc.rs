@@ -7,16 +7,6 @@ use crate::types::SymbolKey;
 const RELOC_FUNCTION_INDEX_LEB: u8 = 0;
 const RELOC_TABLE_NUMBER_LEB: u8 = 20;
 
-const TABLE_INIT_SUBOPCODE: u32 = 0x0c;
-const TABLE_COPY_SUBOPCODE: u32 = 0x0e;
-const TABLE_GROW_SUBOPCODE: u32 = 0x0f;
-const TABLE_SIZE_SUBOPCODE: u32 = 0x10;
-const TABLE_FILL_SUBOPCODE: u32 = 0x11;
-const TABLE_ATOMIC_GET_SUBOPCODE: u32 = 0x58;
-const TABLE_ATOMIC_SET_SUBOPCODE: u32 = 0x59;
-const TABLE_ATOMIC_RMW_XCHG_SUBOPCODE: u32 = 0x5a;
-const TABLE_ATOMIC_RMW_CMPXCHG_SUBOPCODE: u32 = 0x5b;
-
 #[derive(Debug)]
 pub(crate) struct RelocPatch {
     pub(crate) immediate_start: usize,
@@ -78,98 +68,91 @@ pub(crate) fn operator_patches(
     operator: &Operator<'_>,
     offset: usize,
     body_start: usize,
+    body: &[u8],
 ) -> Option<Vec<RelocPatch>> {
     match *operator {
         Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
+            let immediate_start = body_relative(offset + 1, body_start);
             Some(vec![RelocPatch {
-                immediate_start: body_relative(offset + 1, body_start),
-                original_len: u32_leb_len(function_index),
+                immediate_start,
+                original_len: u32_leb_len_at(body, immediate_start),
                 reloc_type: RELOC_FUNCTION_INDEX_LEB,
                 target: SymbolKey::Function(function_index),
             }])
         }
-        Operator::CallIndirect {
-            type_index,
-            table_index,
+        Operator::CallIndirect { table_index, .. }
+        | Operator::ReturnCallIndirect { table_index, .. } => {
+            let type_start = body_relative(offset + 1, body_start);
+            let immediate_start = type_start + u32_leb_len_at(body, type_start);
+            Some(vec![RelocPatch {
+                immediate_start,
+                original_len: u32_leb_len_at(body, immediate_start),
+                reloc_type: RELOC_TABLE_NUMBER_LEB,
+                target: SymbolKey::Table(table_index),
+            }])
         }
-        | Operator::ReturnCallIndirect {
-            type_index,
-            table_index,
-        } => Some(vec![RelocPatch {
-            immediate_start: body_relative(offset + 1 + u32_leb_len(type_index), body_start),
-            original_len: u32_leb_len(table_index),
-            reloc_type: RELOC_TABLE_NUMBER_LEB,
-            target: SymbolKey::Table(table_index),
-        }]),
-        Operator::TableGet { table } | Operator::TableSet { table } => Some(vec![RelocPatch {
-            immediate_start: body_relative(offset + 1, body_start),
-            original_len: u32_leb_len(table),
-            reloc_type: RELOC_TABLE_NUMBER_LEB,
-            target: SymbolKey::Table(table),
-        }]),
-        Operator::TableInit { elem_index, table } => Some(vec![RelocPatch {
-            immediate_start: prefixed_start(offset, TABLE_INIT_SUBOPCODE, body_start)
-                + u32_leb_len(elem_index),
-            original_len: u32_leb_len(table),
-            reloc_type: RELOC_TABLE_NUMBER_LEB,
-            target: SymbolKey::Table(table),
-        }]),
+        Operator::TableGet { table } | Operator::TableSet { table } => {
+            let immediate_start = body_relative(offset + 1, body_start);
+            Some(vec![RelocPatch {
+                immediate_start,
+                original_len: u32_leb_len_at(body, immediate_start),
+                reloc_type: RELOC_TABLE_NUMBER_LEB,
+                target: SymbolKey::Table(table),
+            }])
+        }
+        Operator::TableInit { table, .. } => {
+            let elem_start = prefixed_start(offset, body_start, body);
+            let immediate_start = elem_start + u32_leb_len_at(body, elem_start);
+            Some(vec![RelocPatch {
+                immediate_start,
+                original_len: u32_leb_len_at(body, immediate_start),
+                reloc_type: RELOC_TABLE_NUMBER_LEB,
+                target: SymbolKey::Table(table),
+            }])
+        }
         Operator::TableCopy {
             dst_table,
             src_table,
         } => {
-            let first_immediate_start = prefixed_start(offset, TABLE_COPY_SUBOPCODE, body_start);
+            let first_immediate_start = prefixed_start(offset, body_start, body);
+            let second_immediate_start =
+                first_immediate_start + u32_leb_len_at(body, first_immediate_start);
             Some(vec![
                 RelocPatch {
                     immediate_start: first_immediate_start,
-                    original_len: u32_leb_len(dst_table),
+                    original_len: u32_leb_len_at(body, first_immediate_start),
                     reloc_type: RELOC_TABLE_NUMBER_LEB,
                     target: SymbolKey::Table(dst_table),
                 },
                 RelocPatch {
-                    immediate_start: first_immediate_start + u32_leb_len(dst_table),
-                    original_len: u32_leb_len(src_table),
+                    immediate_start: second_immediate_start,
+                    original_len: u32_leb_len_at(body, second_immediate_start),
                     reloc_type: RELOC_TABLE_NUMBER_LEB,
                     target: SymbolKey::Table(src_table),
                 },
             ])
         }
-        Operator::TableFill { table } => prefixed_table_patch(
-            offset,
-            body_start,
-            TABLE_FILL_SUBOPCODE,
-            SymbolKey::Table(table),
-        ),
-        Operator::TableSize { table } => prefixed_table_patch(
-            offset,
-            body_start,
-            TABLE_SIZE_SUBOPCODE,
-            SymbolKey::Table(table),
-        ),
-        Operator::TableGrow { table } => prefixed_table_patch(
-            offset,
-            body_start,
-            TABLE_GROW_SUBOPCODE,
-            SymbolKey::Table(table),
-        ),
+        Operator::TableFill { table } => {
+            prefixed_table_patch(offset, body_start, body, SymbolKey::Table(table))
+        }
+        Operator::TableSize { table } => {
+            prefixed_table_patch(offset, body_start, body, SymbolKey::Table(table))
+        }
+        Operator::TableGrow { table } => {
+            prefixed_table_patch(offset, body_start, body, SymbolKey::Table(table))
+        }
         Operator::TableAtomicGet { table_index, .. } => {
-            prefixed_table_atomic_patch(offset, body_start, TABLE_ATOMIC_GET_SUBOPCODE, table_index)
+            prefixed_table_atomic_patch(offset, body_start, body, table_index)
         }
         Operator::TableAtomicSet { table_index, .. } => {
-            prefixed_table_atomic_patch(offset, body_start, TABLE_ATOMIC_SET_SUBOPCODE, table_index)
+            prefixed_table_atomic_patch(offset, body_start, body, table_index)
         }
-        Operator::TableAtomicRmwXchg { table_index, .. } => prefixed_table_atomic_patch(
-            offset,
-            body_start,
-            TABLE_ATOMIC_RMW_XCHG_SUBOPCODE,
-            table_index,
-        ),
-        Operator::TableAtomicRmwCmpxchg { table_index, .. } => prefixed_table_atomic_patch(
-            offset,
-            body_start,
-            TABLE_ATOMIC_RMW_CMPXCHG_SUBOPCODE,
-            table_index,
-        ),
+        Operator::TableAtomicRmwXchg { table_index, .. } => {
+            prefixed_table_atomic_patch(offset, body_start, body, table_index)
+        }
+        Operator::TableAtomicRmwCmpxchg { table_index, .. } => {
+            prefixed_table_atomic_patch(offset, body_start, body, table_index)
+        }
         _ => None,
     }
 }
@@ -187,12 +170,13 @@ pub(crate) fn u32_leb_len(value: u32) -> usize {
 fn prefixed_table_patch(
     offset: usize,
     body_start: usize,
-    subopcode: u32,
+    body: &[u8],
     target: SymbolKey,
 ) -> Option<Vec<RelocPatch>> {
+    let immediate_start = prefixed_start(offset, body_start, body);
     Some(vec![RelocPatch {
-        immediate_start: prefixed_start(offset, subopcode, body_start),
-        original_len: u32_leb_len(target.index()),
+        immediate_start,
+        original_len: u32_leb_len_at(body, immediate_start),
         reloc_type: RELOC_TABLE_NUMBER_LEB,
         target,
     }])
@@ -201,12 +185,13 @@ fn prefixed_table_patch(
 fn prefixed_table_atomic_patch(
     offset: usize,
     body_start: usize,
-    subopcode: u32,
+    body: &[u8],
     table_index: u32,
 ) -> Option<Vec<RelocPatch>> {
+    let immediate_start = prefixed_start(offset, body_start, body) + 1;
     Some(vec![RelocPatch {
-        immediate_start: prefixed_start(offset, subopcode, body_start) + 1,
-        original_len: u32_leb_len(table_index),
+        immediate_start,
+        original_len: u32_leb_len_at(body, immediate_start),
         reloc_type: RELOC_TABLE_NUMBER_LEB,
         target: SymbolKey::Table(table_index),
     }])
@@ -216,8 +201,18 @@ fn body_relative(offset: usize, body_start: usize) -> usize {
     offset.saturating_sub(body_start)
 }
 
-fn prefixed_start(offset: usize, subopcode: u32, body_start: usize) -> usize {
-    body_relative(offset + 1 + u32_leb_len(subopcode), body_start)
+fn prefixed_start(offset: usize, body_start: usize, body: &[u8]) -> usize {
+    let subopcode_start = body_relative(offset + 1, body_start);
+    subopcode_start + u32_leb_len_at(body, subopcode_start)
+}
+
+fn u32_leb_len_at(body: &[u8], offset: usize) -> usize {
+    for (i, byte) in body[offset..].iter().take(5).enumerate() {
+        if byte & 0x80 == 0 {
+            return i + 1;
+        }
+    }
+    panic!("expected valid u32 LEB immediate in generated function body")
 }
 
 fn index_as_u32(index: Index<'_>) -> u32 {
