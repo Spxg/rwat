@@ -67,12 +67,11 @@ pub(crate) fn instruction_targets(instr: &Instruction<'_>) -> Option<Vec<SymbolK
 pub(crate) fn operator_patches(
     operator: &Operator<'_>,
     offset: usize,
-    body_start: usize,
     body: &[u8],
 ) -> Option<Vec<RelocPatch>> {
     match *operator {
         Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
-            let immediate_start = body_relative(offset + 1, body_start);
+            let immediate_start = offset + 1;
             Some(vec![RelocPatch {
                 immediate_start,
                 original_len: u32_leb_len_at(body, immediate_start),
@@ -82,7 +81,7 @@ pub(crate) fn operator_patches(
         }
         Operator::CallIndirect { table_index, .. }
         | Operator::ReturnCallIndirect { table_index, .. } => {
-            let type_start = body_relative(offset + 1, body_start);
+            let type_start = offset + 1;
             let immediate_start = type_start + u32_leb_len_at(body, type_start);
             Some(vec![RelocPatch {
                 immediate_start,
@@ -92,7 +91,7 @@ pub(crate) fn operator_patches(
             }])
         }
         Operator::TableGet { table } | Operator::TableSet { table } => {
-            let immediate_start = body_relative(offset + 1, body_start);
+            let immediate_start = offset + 1;
             Some(vec![RelocPatch {
                 immediate_start,
                 original_len: u32_leb_len_at(body, immediate_start),
@@ -101,7 +100,7 @@ pub(crate) fn operator_patches(
             }])
         }
         Operator::TableInit { table, .. } => {
-            let elem_start = prefixed_start(offset, body_start, body);
+            let elem_start = prefixed_start(offset, body);
             let immediate_start = elem_start + u32_leb_len_at(body, elem_start);
             Some(vec![RelocPatch {
                 immediate_start,
@@ -114,7 +113,7 @@ pub(crate) fn operator_patches(
             dst_table,
             src_table,
         } => {
-            let first_immediate_start = prefixed_start(offset, body_start, body);
+            let first_immediate_start = prefixed_start(offset, body);
             let second_immediate_start =
                 first_immediate_start + u32_leb_len_at(body, first_immediate_start);
             Some(vec![
@@ -133,25 +132,25 @@ pub(crate) fn operator_patches(
             ])
         }
         Operator::TableFill { table } => {
-            prefixed_table_patch(offset, body_start, body, SymbolKey::Table(table))
+            prefixed_table_patch(offset, body, SymbolKey::Table(table))
         }
         Operator::TableSize { table } => {
-            prefixed_table_patch(offset, body_start, body, SymbolKey::Table(table))
+            prefixed_table_patch(offset, body, SymbolKey::Table(table))
         }
         Operator::TableGrow { table } => {
-            prefixed_table_patch(offset, body_start, body, SymbolKey::Table(table))
+            prefixed_table_patch(offset, body, SymbolKey::Table(table))
         }
         Operator::TableAtomicGet { table_index, .. } => {
-            prefixed_table_atomic_patch(offset, body_start, body, table_index)
+            prefixed_table_atomic_patch(offset, body, table_index)
         }
         Operator::TableAtomicSet { table_index, .. } => {
-            prefixed_table_atomic_patch(offset, body_start, body, table_index)
+            prefixed_table_atomic_patch(offset, body, table_index)
         }
         Operator::TableAtomicRmwXchg { table_index, .. } => {
-            prefixed_table_atomic_patch(offset, body_start, body, table_index)
+            prefixed_table_atomic_patch(offset, body, table_index)
         }
         Operator::TableAtomicRmwCmpxchg { table_index, .. } => {
-            prefixed_table_atomic_patch(offset, body_start, body, table_index)
+            prefixed_table_atomic_patch(offset, body, table_index)
         }
         _ => None,
     }
@@ -167,13 +166,8 @@ pub(crate) fn u32_leb_len(value: u32) -> usize {
     }
 }
 
-fn prefixed_table_patch(
-    offset: usize,
-    body_start: usize,
-    body: &[u8],
-    target: SymbolKey,
-) -> Option<Vec<RelocPatch>> {
-    let immediate_start = prefixed_start(offset, body_start, body);
+fn prefixed_table_patch(offset: usize, body: &[u8], target: SymbolKey) -> Option<Vec<RelocPatch>> {
+    let immediate_start = prefixed_start(offset, body);
     Some(vec![RelocPatch {
         immediate_start,
         original_len: u32_leb_len_at(body, immediate_start),
@@ -184,11 +178,10 @@ fn prefixed_table_patch(
 
 fn prefixed_table_atomic_patch(
     offset: usize,
-    body_start: usize,
     body: &[u8],
     table_index: u32,
 ) -> Option<Vec<RelocPatch>> {
-    let immediate_start = prefixed_start(offset, body_start, body) + 1;
+    let immediate_start = prefixed_start(offset, body) + 1;
     Some(vec![RelocPatch {
         immediate_start,
         original_len: u32_leb_len_at(body, immediate_start),
@@ -197,12 +190,8 @@ fn prefixed_table_atomic_patch(
     }])
 }
 
-fn body_relative(offset: usize, body_start: usize) -> usize {
-    offset.saturating_sub(body_start)
-}
-
-fn prefixed_start(offset: usize, body_start: usize, body: &[u8]) -> usize {
-    let subopcode_start = body_relative(offset + 1, body_start);
+fn prefixed_start(offset: usize, body: &[u8]) -> usize {
+    let subopcode_start = offset + 1;
     subopcode_start + u32_leb_len_at(body, subopcode_start)
 }
 

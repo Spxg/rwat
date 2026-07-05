@@ -138,13 +138,15 @@ fn reloc_patches(body: &FunctionBody<'_>, func: &DefinedFunc<'_>) -> Vec<RelocPa
         .expect("expected generated function bodies to decode successfully");
 
     while !reader.eof() {
-        let offset = reader.original_position();
+        let operator_start = reader
+            .original_position()
+            .saturating_sub(body.range().start);
+
         let operator = reader
             .read()
             .expect("expected generated operators to decode successfully");
 
-        let Some(instr_patches) =
-            operator_patches(&operator, offset, body.range().start, body.as_bytes())
+        let Some(instr_patches) = operator_patches(&operator, operator_start, body.as_bytes())
         else {
             continue;
         };
