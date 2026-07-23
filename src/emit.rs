@@ -1,6 +1,4 @@
-use wasm_encoder::{
-    CustomSection, LinkingSection, Module as WasmModule, RawSection as WasmRawSection,
-};
+use wasm_encoder::{CustomSection, Module as WasmModule, RawSection as WasmRawSection};
 use wasmparser::{Parser as WasmParser, Payload};
 
 use crate::{
@@ -12,7 +10,7 @@ pub(crate) fn emit_module(
     wasm: Vec<u8>,
     sections: Vec<RawSection>,
     patched_code: Option<PatchedCodeSection>,
-    linking: Option<LinkingSection>,
+    linking: Option<Vec<u8>>,
     reloc: Option<Vec<u8>>,
 ) -> Vec<u8> {
     let mut out = WasmModule::new();
@@ -20,7 +18,7 @@ pub(crate) fn emit_module(
     // Object custom sections go after the last non-custom section.
     let insert_idx = sections.iter().rposition(|section| section.id != 0);
     if insert_idx.is_none() {
-        emit_object_sections(&mut out, linking.as_ref(), reloc.as_deref());
+        emit_object_sections(&mut out, linking.as_deref(), reloc.as_deref());
     }
 
     for (i, section) in sections.into_iter().enumerate() {
@@ -37,7 +35,7 @@ pub(crate) fn emit_module(
         out.section(&section);
 
         if insert_idx == Some(i) {
-            emit_object_sections(&mut out, linking.as_ref(), reloc.as_deref());
+            emit_object_sections(&mut out, linking.as_deref(), reloc.as_deref());
         }
     }
 
@@ -69,19 +67,21 @@ pub(crate) fn raw_sections(options: &ParseOptions, wasm: &[u8]) -> Vec<RawSectio
     sections
 }
 
-fn emit_object_sections(
-    out: &mut WasmModule,
-    linking: Option<&LinkingSection>,
-    reloc: Option<&[u8]>,
-) {
+fn emit_object_sections(out: &mut WasmModule, linking: Option<&[u8]>, reloc: Option<&[u8]>) {
     // The "linking" custom section must be after the
     // data section in order to validate data symbols.
     if let Some(linking) = linking {
-        out.section(linking);
+        out.section(&CustomSection {
+            name: "linking".into(),
+            data: linking.into(),
+        });
     } else {
         // Generate the linking section even when there
         // is no link information.
-        out.section(&LinkingSection::new());
+        out.section(&CustomSection {
+            name: "linking".into(),
+            data: (&[2][..]).into(),
+        });
     }
     // The "reloc." custom sections must come after the
     // "linking" custom section in order to validate

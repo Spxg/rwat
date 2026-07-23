@@ -40,6 +40,23 @@ pub(crate) fn scan_table_sym<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation
 }
 
 // Example:
+// `(tag $t (@sym (name "tag")) (param externref))`
+//  -> `Explicit("tag")`
+// `(tag $t (@sym) (param externref))`
+//  -> `Inferred`
+// `(tag $t (param externref))`
+//  -> `Missing`
+pub(crate) fn scan_tag_sym<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor<'a>)> {
+    let cursor = expect_keyword(cursor, "tag")?;
+    let cursor = if let Some((_, next)) = cursor.id()? {
+        next
+    } else {
+        cursor
+    };
+    scan_sym_annotation(cursor)
+}
+
+// Example:
 // `(import "env" "f" (func $f (@sym (name "foo"))))`
 //  -> `[Explicit("foo")]`
 // `(import "env" "t" (table $t (@sym (name "tab")) 1 externref))`
@@ -93,7 +110,11 @@ pub(crate) fn scan_import_syms<'a>(
 //    return_call $bar (@reloc)
 //  )`
 //  -> spans for the `call` and `return_call` instructions
-pub(crate) fn scan_func_reloc_spans<'a>(mut cursor: Cursor<'a>) -> Result<(Vec<Span>, Cursor<'a>)> {
+pub(crate) fn scan_func_reloc_spans<'a>(cursor: Cursor<'a>) -> Result<(Vec<Span>, Cursor<'a>)> {
+    scan_reloc_spans_until_rparen(cursor)
+}
+
+fn scan_reloc_spans_until_rparen<'a>(mut cursor: Cursor<'a>) -> Result<(Vec<Span>, Cursor<'a>)> {
     let mut relocs = Vec::new();
     let mut last_relocatable_instr = None;
 
@@ -109,16 +130,16 @@ pub(crate) fn scan_func_reloc_spans<'a>(mut cursor: Cursor<'a>) -> Result<(Vec<S
                 && annotation == "reloc"
             {
                 let Some(instr_span) = last_relocatable_instr else {
-                    return Err(cursor.error(
-                        "`@reloc` must follow `call`, `return_call`, `call_indirect`, `return_call_indirect`, or a table instruction",
-                    ));
+                    return Err(cursor.error("`@reloc` must follow a relocatable instruction"));
                 };
                 relocs.push(instr_span);
                 cursor = expect_rparen(after_annotation)?;
                 continue;
             }
 
-            cursor = skip_until_rparen(next)?;
+            let (nested_relocs, next) = scan_reloc_spans_until_rparen(next)?;
+            relocs.extend(nested_relocs);
+            cursor = next;
             continue;
         }
 
@@ -178,7 +199,7 @@ fn scan_item_sig<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor
     };
 
     let mut sym = SymbolAnnotation::Missing;
-    if kind == "func" || kind == "table" {
+    if kind == "func" || kind == "table" || kind == "tag" {
         if let Some((_, next)) = cursor.id()? {
             cursor = next;
         }
@@ -524,6 +545,10 @@ mod tests {
             parse_reloc_count(
                 r#"(func i32.const 0 call_indirect (type 0) (@reloc) table.get 0 (@reloc))"#,
             ),
+            2,
+        );
+        assert_eq!(
+            parse_reloc_count(r#"(func (try_table (catch 0 0) (@reloc) throw 0 (@reloc)))"#,),
             2,
         );
     }

@@ -300,6 +300,49 @@ fn test_print_table_copy_relocates_both_table_immediates() {
 }
 
 #[test]
+fn test_print_tag_symbol_and_relocations() {
+    let actual = print_wat(
+        r#"
+            (module (@rwat)
+              (import "js" "exception"
+                (tag $exception (@sym (name "js.exception")) (param externref)))
+              (tag $defined (@sym) (param externref))
+              (func
+                (block $caught (result externref)
+                  (try_table (catch $exception $caught) (@reloc)
+                    ref.null extern
+                    throw $exception (@reloc)
+                  )
+                  unreachable
+                )
+                drop
+              )
+            )
+        "#,
+    );
+    let expected = r#"(module
+  (type (;0;) (func (param externref)))
+  (type (;1;) (func))
+  (import "js" "exception" (tag $exception (;0;) (type 0) (param externref)))
+  (tag $defined (;1;) (type 0) (param externref))
+  (func (;0;) (type 1)
+    block $caught (result externref)
+      try_table (catch $exception $caught) ;; label = @2
+        ref.null extern
+        throw $exception
+      end
+      unreachable
+    end
+    drop
+  )
+  (@custom "linking" (after code) "\02\08\1c\02\04P\00\0cjs.exception\04\00\01\07defined")
+  (@custom "reloc.CODE" (after code) "\04\02\0a\09\00\0a\12\00")
+)
+"#;
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn test_parse_rejects_missing_rwat_annotation() {
     let wat = r#"
             (module

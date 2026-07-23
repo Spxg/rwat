@@ -1,15 +1,24 @@
 use std::collections::{HashMap, HashSet};
 
-use wasm_encoder::{LinkingSection, SymbolTable};
-use wast::core::{Func, FuncKind, Imports, ItemKind, ModuleField, Table, TableKind};
+use wasm_encoder::Encode;
+use wast::core::{Func, FuncKind, Imports, ItemKind, ModuleField, Table, TableKind, Tag, TagKind};
 use wast::token::Id;
 
 use crate::parse::{Result, error};
 use crate::reloc;
 use crate::types::{
-    DefinedFunc, DefinedTable, FuncAnnotation, LinkInfo, ParsedRelocInstruction, RelocImports,
-    RelocWat, Symbol, SymbolAnnotation, SymbolKey, TableAnnotation,
+    DefinedFunc, DefinedTable, DefinedTag, FuncAnnotation, LinkInfo, ParsedRelocInstruction,
+    RelocImports, RelocWat, Symbol, SymbolAnnotation, SymbolKey, TableAnnotation, TagAnnotation,
 };
+
+// Encode the symbol table here because wasm-encoder does not currently expose
+// a tag-symbol API.
+const SYMTAB_FUNCTION: u8 = 0;
+const SYMTAB_TAG: u8 = 4;
+const SYMTAB_TABLE: u8 = 5;
+const WASM_SYMBOL_TABLE: u8 = 8;
+const WASM_SYM_UNDEFINED: u32 = 0x10;
+const WASM_SYM_EXPLICIT_NAME: u32 = 0x40;
 
 pub(crate) fn build_link_info<'a>(
     wat: &'a str,
@@ -20,6 +29,7 @@ pub(crate) fn build_link_info<'a>(
     let mut import_annotations = rwat.import_annotations.iter();
     let mut func_annotations = rwat.func_annotations.iter();
     let mut table_annotations = rwat.table_annotations.iter();
+    let mut tag_annotations = rwat.tag_annotations.iter();
 
     for field in fields {
         match field {
@@ -41,6 +51,12 @@ pub(crate) fn build_link_info<'a>(
                     .expect("expected table annotations to line up with resolved module tables");
                 builder.visit_table(table, annotation);
             }
+            ModuleField::Tag(tag) => {
+                let annotation = tag_annotations
+                    .next()
+                    .expect("expected tag annotations to line up with resolved module tags");
+                builder.visit_tag(tag, annotation);
+            }
             _ => continue,
         }
     }
@@ -57,58 +73,83 @@ pub(crate) fn build_link_info<'a>(
         table_annotations.next().is_none(),
         "all table annotations should be consumed",
     );
+    assert!(
+        tag_annotations.next().is_none(),
+        "all tag annotations should be consumed",
+    );
 
     builder.finish(wat)
 }
 
-pub(crate) fn linking_section(link_info: &LinkInfo<'_>) -> Option<LinkingSection> {
+pub(crate) fn linking_section(link_info: &LinkInfo<'_>) -> Option<Vec<u8>> {
+    fn import_flags(explicit_name: Option<&str>) -> u32 {
+        WASM_SYM_UNDEFINED
+            | if explicit_name.is_some() {
+                WASM_SYM_EXPLICIT_NAME
+            } else {
+                0
+            }
+    }
+
     if link_info.symbols.is_empty() {
         return None;
     }
 
-    let mut linking = LinkingSection::new();
-    let mut symbols = SymbolTable::new();
+    let mut symbols = Vec::new();
+    u32::try_from(link_info.symbols.len())
+        .unwrap()
+        .encode(&mut symbols);
+
     for symbol in &link_info.symbols {
-        match *symbol {
+        let (kind, flags, index, name) = match *symbol {
             Symbol::FunctionImport {
                 index,
                 explicit_name,
-            } => {
-                // Indicating that this symbol is not defined.
-                // For non-data symbols, this must match whether the symbol is an import
-                // or is defined.
-                let mut flags = SymbolTable::WASM_SYM_UNDEFINED;
-                if explicit_name.is_some() {
-                    // The symbol uses an explicit symbol name,
-                    // rather than reusing the name from a wasm import.
-                    flags |= SymbolTable::WASM_SYM_EXPLICIT_NAME;
-                }
-                symbols.function(flags, index, explicit_name);
-            }
+            } => (
+                SYMTAB_FUNCTION,
+                import_flags(explicit_name),
+                index,
+                explicit_name,
+            ),
             Symbol::FunctionDefined { index, symbol_name } => {
-                symbols.function(0, index, Some(symbol_name));
+                (SYMTAB_FUNCTION, 0, index, Some(symbol_name))
             }
             Symbol::TableImport {
                 index,
                 explicit_name,
-            } => {
-                // Indicating that this symbol is not defined.
-                // For non-data symbols, this must match whether the symbol is an import
-                // or is defined.
-                let mut flags = SymbolTable::WASM_SYM_UNDEFINED;
-                if explicit_name.is_some() {
-                    // The symbol uses an explicit symbol name,
-                    // rather than reusing the name from a wasm import.
-                    flags |= SymbolTable::WASM_SYM_EXPLICIT_NAME;
-                }
-                symbols.table(flags, index, explicit_name);
-            }
+            } => (
+                SYMTAB_TABLE,
+                import_flags(explicit_name),
+                index,
+                explicit_name,
+            ),
             Symbol::TableDefined { index, symbol_name } => {
-                symbols.table(0, index, Some(symbol_name));
+                (SYMTAB_TABLE, 0, index, Some(symbol_name))
             }
+            Symbol::TagImport {
+                index,
+                explicit_name,
+            } => (
+                SYMTAB_TAG,
+                import_flags(explicit_name),
+                index,
+                explicit_name,
+            ),
+            Symbol::TagDefined { index, symbol_name } => (SYMTAB_TAG, 0, index, Some(symbol_name)),
+        };
+
+        symbols.push(kind);
+        flags.encode(&mut symbols);
+        index.encode(&mut symbols);
+        if let Some(name) = name {
+            name.encode(&mut symbols);
         }
     }
-    linking.symbol_table(&symbols);
+
+    let mut linking = Vec::new();
+    2_u32.encode(&mut linking);
+    linking.push(WASM_SYMBOL_TABLE);
+    symbols.encode(&mut linking);
     Some(linking)
 }
 
@@ -116,8 +157,10 @@ pub(crate) fn linking_section(link_info: &LinkInfo<'_>) -> Option<LinkingSection
 struct LinkInfoBuilder<'a> {
     imported_funcs: Vec<SymbolAnnotation<'a>>,
     imported_tables: Vec<SymbolAnnotation<'a>>,
+    imported_tags: Vec<SymbolAnnotation<'a>>,
     defined_funcs: Vec<DefinedFunc<'a>>,
     defined_tables: Vec<DefinedTable<'a>>,
+    defined_tags: Vec<DefinedTag<'a>>,
     linking: HashSet<SymbolKey>,
 }
 
@@ -131,6 +174,7 @@ impl<'a> LinkInfoBuilder<'a> {
             match &sig.kind {
                 ItemKind::Func(_) | ItemKind::FuncExact(_) => self.push_imported_function(sym),
                 ItemKind::Table(_) => self.push_imported_table(sym),
+                ItemKind::Tag(_) => self.push_imported_tag(sym),
                 _ => {}
             }
         }
@@ -163,6 +207,20 @@ impl<'a> LinkInfoBuilder<'a> {
         }
     }
 
+    fn visit_tag(&mut self, tag: &Tag<'a>, annotation: &TagAnnotation<'a>) {
+        match tag.kind {
+            TagKind::Import(_) => self.push_imported_tag(annotation.sym),
+            TagKind::Inline() => {
+                let index = self.next_defined_tag_index();
+                self.mark_tag_if_present(index, annotation.sym);
+                self.defined_tags.push(DefinedTag {
+                    symbol_name: inferred_symbol_name(annotation.sym, tag.id.as_ref()),
+                    span: tag.span,
+                });
+            }
+        }
+    }
+
     fn push_imported_function(&mut self, sym: SymbolAnnotation<'a>) {
         let index = u32::try_from(self.imported_funcs.len()).unwrap();
         self.mark_function_if_present(index, sym);
@@ -175,12 +233,22 @@ impl<'a> LinkInfoBuilder<'a> {
         self.imported_tables.push(sym);
     }
 
+    fn push_imported_tag(&mut self, sym: SymbolAnnotation<'a>) {
+        let index = u32::try_from(self.imported_tags.len()).unwrap();
+        self.mark_tag_if_present(index, sym);
+        self.imported_tags.push(sym);
+    }
+
     fn next_defined_function_index(&self) -> u32 {
         u32::try_from(self.imported_funcs.len() + self.defined_funcs.len()).unwrap()
     }
 
     fn next_defined_table_index(&self) -> u32 {
         u32::try_from(self.imported_tables.len() + self.defined_tables.len()).unwrap()
+    }
+
+    fn next_defined_tag_index(&self) -> u32 {
+        u32::try_from(self.imported_tags.len() + self.defined_tags.len()).unwrap()
     }
 
     fn mark_function_if_present(&mut self, index: u32, sym: SymbolAnnotation<'a>) {
@@ -195,9 +263,16 @@ impl<'a> LinkInfoBuilder<'a> {
         }
     }
 
+    fn mark_tag_if_present(&mut self, index: u32, sym: SymbolAnnotation<'a>) {
+        if sym.is_present() {
+            self.linking.insert(SymbolKey::Tag(index));
+        }
+    }
+
     fn finish(self, wat: &'a str) -> Result<LinkInfo<'a>> {
         let num_imported_functions = u32::try_from(self.imported_funcs.len()).unwrap();
         let num_imported_tables = u32::try_from(self.imported_tables.len()).unwrap();
+        let num_imported_tags = u32::try_from(self.imported_tags.len()).unwrap();
 
         let mut symbols = Vec::new();
         let mut symbol_indices = HashMap::new();
@@ -216,6 +291,8 @@ impl<'a> LinkInfoBuilder<'a> {
             &mut symbols,
             &mut symbol_indices,
         )?;
+        self.add_imported_tag_symbols(&mut symbols, &mut symbol_indices);
+        self.add_defined_tag_symbols(wat, num_imported_tags, &mut symbols, &mut symbol_indices)?;
 
         Ok(LinkInfo {
             symbols,
@@ -310,6 +387,51 @@ impl<'a> LinkInfoBuilder<'a> {
                 ));
             };
             symbols.push(Symbol::TableDefined { index, symbol_name });
+        }
+        Ok(())
+    }
+
+    fn add_imported_tag_symbols(
+        &self,
+        symbols: &mut Vec<Symbol<'a>>,
+        symbol_indices: &mut HashMap<SymbolKey, u32>,
+    ) {
+        for (index, sym) in self.imported_tags.iter().enumerate() {
+            let index = u32::try_from(index).unwrap();
+            let key = SymbolKey::Tag(index);
+            if !self.linking.contains(&key) {
+                continue;
+            }
+            symbol_indices.insert(key, u32::try_from(symbols.len()).unwrap());
+            symbols.push(Symbol::TagImport {
+                index,
+                explicit_name: sym.explicit_name(),
+            });
+        }
+    }
+
+    fn add_defined_tag_symbols(
+        &self,
+        wat: &'a str,
+        num_imported_tags: u32,
+        symbols: &mut Vec<Symbol<'a>>,
+        symbol_indices: &mut HashMap<SymbolKey, u32>,
+    ) -> Result<()> {
+        for (offset, tag) in self.defined_tags.iter().enumerate() {
+            let index = num_imported_tags + u32::try_from(offset).unwrap();
+            let key = SymbolKey::Tag(index);
+            if !self.linking.contains(&key) {
+                continue;
+            }
+            symbol_indices.insert(key, u32::try_from(symbols.len()).unwrap());
+            let Some(symbol_name) = tag.symbol_name else {
+                return Err(error(
+                    wat,
+                    tag.span,
+                    "defined tag symbols require an explicit `@sym (name ...)` or tag identifier",
+                ));
+            };
+            symbols.push(Symbol::TagDefined { index, symbol_name });
         }
         Ok(())
     }

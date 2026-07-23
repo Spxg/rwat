@@ -1,10 +1,11 @@
-use wasmparser::Operator;
-use wast::core::Instruction;
+use wasmparser::{Catch, Operator};
+use wast::core::{Instruction, TryTableCatchKind};
 use wast::token::Index;
 
 use crate::types::SymbolKey;
 
 const RELOC_FUNCTION_INDEX_LEB: u8 = 0;
+const RELOC_TAG_INDEX_LEB: u8 = 10;
 const RELOC_TABLE_NUMBER_LEB: u8 = 20;
 
 #[derive(Debug)]
@@ -20,6 +21,8 @@ pub(crate) fn is_relocatable_keyword(keyword: &str) -> bool {
         keyword,
         "call"
             | "return_call"
+            | "throw"
+            | "try_table"
             | "call_indirect"
             | "return_call_indirect"
             | "table.get"
@@ -41,6 +44,19 @@ pub(crate) fn instruction_targets(instr: &Instruction<'_>) -> Option<Vec<SymbolK
         Instruction::Call(call) | Instruction::ReturnCall(call) => {
             Some(vec![SymbolKey::Function(index_as_u32(*call))])
         }
+        Instruction::Throw(tag) => Some(vec![SymbolKey::Tag(index_as_u32(*tag))]),
+        Instruction::TryTable(try_table) => Some(
+            try_table
+                .catches
+                .iter()
+                .filter_map(|catch| match catch.kind {
+                    TryTableCatchKind::Catch(tag) | TryTableCatchKind::CatchRef(tag) => {
+                        Some(SymbolKey::Tag(index_as_u32(tag)))
+                    }
+                    TryTableCatchKind::CatchAll | TryTableCatchKind::CatchAllRef => None,
+                })
+                .collect(),
+        ),
         Instruction::CallIndirect(call) | Instruction::ReturnCallIndirect(call) => {
             Some(vec![SymbolKey::Table(index_as_u32(call.table))])
         }
@@ -69,6 +85,10 @@ pub(crate) fn operator_patches(
     offset: usize,
     body: &[u8],
 ) -> Option<Vec<RelocPatch>> {
+    if let Operator::TryTable { try_table } = operator {
+        return try_table_patches(offset, body, try_table);
+    }
+
     match *operator {
         Operator::Call { function_index } | Operator::ReturnCall { function_index } => {
             let immediate_start = offset + 1;
@@ -77,6 +97,15 @@ pub(crate) fn operator_patches(
                 original_len: u32_leb_len_at(body, immediate_start),
                 reloc_type: RELOC_FUNCTION_INDEX_LEB,
                 target: SymbolKey::Function(function_index),
+            }])
+        }
+        Operator::Throw { tag_index } => {
+            let immediate_start = offset + 1;
+            Some(vec![RelocPatch {
+                immediate_start,
+                original_len: u32_leb_len_at(body, immediate_start),
+                reloc_type: RELOC_TAG_INDEX_LEB,
+                target: SymbolKey::Tag(tag_index),
             }])
         }
         Operator::CallIndirect { table_index, .. }
@@ -156,6 +185,39 @@ pub(crate) fn operator_patches(
     }
 }
 
+fn try_table_patches(
+    offset: usize,
+    body: &[u8],
+    try_table: &wasmparser::TryTable,
+) -> Option<Vec<RelocPatch>> {
+    let mut cursor = offset + 1;
+    cursor += block_type_len_at(body, cursor);
+    cursor += u32_leb_len_at(body, cursor);
+
+    let mut patches = Vec::new();
+    for catch in &try_table.catches {
+        cursor += 1;
+
+        match *catch {
+            Catch::One { tag, .. } | Catch::OneRef { tag, .. } => {
+                let original_len = u32_leb_len_at(body, cursor);
+                patches.push(RelocPatch {
+                    immediate_start: cursor,
+                    original_len,
+                    reloc_type: RELOC_TAG_INDEX_LEB,
+                    target: SymbolKey::Tag(tag),
+                });
+                cursor += original_len;
+            }
+            Catch::All { .. } | Catch::AllRef { .. } => {}
+        }
+
+        cursor += u32_leb_len_at(body, cursor);
+    }
+
+    Some(patches)
+}
+
 pub(crate) fn u32_leb_len(value: u32) -> usize {
     match value {
         0..=0x7f => 1,
@@ -196,12 +258,21 @@ fn prefixed_start(offset: usize, body: &[u8]) -> usize {
 }
 
 fn u32_leb_len_at(body: &[u8], offset: usize) -> usize {
-    for (i, byte) in body[offset..].iter().take(5).enumerate() {
+    leb_len_at(body, offset, 5)
+}
+
+fn block_type_len_at(body: &[u8], offset: usize) -> usize {
+    let prefix_len = usize::from(matches!(body[offset], 0x63 | 0x64));
+    prefix_len + leb_len_at(body, offset + prefix_len, 5)
+}
+
+fn leb_len_at(body: &[u8], offset: usize, max_len: usize) -> usize {
+    for (i, byte) in body[offset..].iter().take(max_len).enumerate() {
         if byte & 0x80 == 0 {
             return i + 1;
         }
     }
-    panic!("expected valid u32 LEB immediate in generated function body")
+    panic!("expected valid LEB immediate in generated function body")
 }
 
 fn index_as_u32(index: Index<'_>) -> u32 {

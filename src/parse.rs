@@ -3,8 +3,10 @@ use crate::code::{encode_reloc_code_section, patch_code_section};
 use crate::emit::{emit_module, raw_sections};
 use crate::link::{build_link_info, linking_section};
 use crate::scan;
-use crate::types::{FuncAnnotation, ParsedRelocFunc, RelocImports, RelocWat, TableAnnotation};
-use wast::core::{Func, FuncKind, Imports, Module, ModuleField, ModuleKind, Table};
+use crate::types::{
+    FuncAnnotation, ParsedRelocFunc, RelocImports, RelocWat, TableAnnotation, TagAnnotation,
+};
+use wast::core::{Func, FuncKind, Imports, Module, ModuleField, ModuleKind, Table, Tag};
 use wast::parser::{self, Parse, ParseBuffer, Parser};
 use wast::token::{Id, NameAnnotation, Span};
 use wast::{Wat, kw};
@@ -144,6 +146,9 @@ impl<'a> Parse<'a> for RelocWat<'a> {
                     } else if parser.peek2::<kw::table>()? {
                         rwat.table_annotations
                             .push(parser.parens(TableAnnotation::parse)?);
+                    } else if parser.peek2::<kw::tag>()? {
+                        rwat.tag_annotations
+                            .push(parser.parens(TagAnnotation::parse)?);
                     } else {
                         parser.parens(|parser| parser.parse::<ModuleField<'a>>().map(|_| ()))?;
                     }
@@ -219,6 +224,21 @@ impl<'a> Parse<'a> for TableAnnotation<'a> {
         };
         let _: Table<'a> = parser.parse()?;
         Ok(TableAnnotation { sym })
+    }
+}
+
+impl<'a> Parse<'a> for TagAnnotation<'a> {
+    fn parse(parser: Parser<'a>) -> Result<Self> {
+        let sym = {
+            let _sym = parser.register_annotation("sym");
+            parser.step(|cursor| {
+                let start = cursor;
+                let (sym, _) = scan::scan_tag_sym(cursor)?;
+                Ok((sym, start))
+            })?
+        };
+        let _: Tag<'a> = parser.parse()?;
+        Ok(TagAnnotation { sym })
     }
 }
 

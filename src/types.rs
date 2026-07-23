@@ -11,6 +11,7 @@ pub(crate) struct RelocWat<'a> {
     pub(crate) import_annotations: Vec<RelocImports<'a>>,
     pub(crate) func_annotations: Vec<FuncAnnotation<'a>>,
     pub(crate) table_annotations: Vec<TableAnnotation<'a>>,
+    pub(crate) tag_annotations: Vec<TagAnnotation<'a>>,
 }
 
 #[derive(Debug)]
@@ -26,6 +27,11 @@ pub(crate) struct FuncAnnotation<'a> {
 
 #[derive(Debug)]
 pub(crate) struct TableAnnotation<'a> {
+    pub(crate) sym: SymbolAnnotation<'a>,
+}
+
+#[derive(Debug)]
+pub(crate) struct TagAnnotation<'a> {
     pub(crate) sym: SymbolAnnotation<'a>,
 }
 
@@ -59,12 +65,13 @@ pub(crate) enum ParsedRelocFunc<'a> {
 pub(crate) enum SymbolKey {
     Function(u32),
     Table(u32),
+    Tag(u32),
 }
 
 impl SymbolKey {
     pub(crate) fn index(self) -> u32 {
         match self {
-            Self::Function(index) | Self::Table(index) => index,
+            Self::Function(index) | Self::Table(index) | Self::Tag(index) => index,
         }
     }
 }
@@ -87,6 +94,14 @@ pub(crate) enum Symbol<'a> {
         index: u32,
         symbol_name: &'a str,
     },
+    TagImport {
+        index: u32,
+        explicit_name: Option<&'a str>,
+    },
+    TagDefined {
+        index: u32,
+        symbol_name: &'a str,
+    },
 }
 
 #[derive(Debug)]
@@ -98,6 +113,12 @@ pub(crate) struct DefinedFunc<'a> {
 
 #[derive(Debug)]
 pub(crate) struct DefinedTable<'a> {
+    pub(crate) symbol_name: Option<&'a str>,
+    pub(crate) span: Span,
+}
+
+#[derive(Debug)]
+pub(crate) struct DefinedTag<'a> {
     pub(crate) symbol_name: Option<&'a str>,
     pub(crate) span: Span,
 }

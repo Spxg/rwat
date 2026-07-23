@@ -15,12 +15,12 @@ pub fn parse_rwat(wat: &str) -> wast::parser::Result<Vec<u8>>
 `rwat` extends plain wat with three annotations:
 
 - `(@rwat)`: required on the module header to enable `rwat` parsing.
-- `(@sym)` or `(@sym (name "..."))`: declares a symbol for a function/table import or function/table definition.
-- `(@reloc)`: marks the immediately preceding relocatable instruction as requiring a relocation entry. This includes `call`, `return_call`, `call_indirect`, `return_call_indirect`, and table instructions such as `table.get`, `table.copy`, and `table.size`.
+- `(@sym)` or `(@sym (name "..."))`: declares a symbol for a function, table, or tag import or definition.
+- `(@reloc)`: marks the immediately preceding relocatable instruction as requiring a relocation entry. This includes `call`, `return_call`, `call_indirect`, `return_call_indirect`, `throw`, typed `try_table` catches, and table instructions such as `table.get`, `table.copy`, and `table.size`.
 
-For function or table definitions, if you write `(@sym)` without an explicit name, `rwat` uses the item ID as the symbol name when available.
+For function, table, or tag definitions, if you write `(@sym)` without an explicit name, `rwat` uses the item ID as the symbol name when available.
 
-Currently, `rwat` only emits two WebAssembly relocation types: `R_WASM_FUNCTION_INDEX_LEB` for function indices and `R_WASM_TABLE_NUMBER_LEB` for table indices.
+Currently, `rwat` emits `R_WASM_FUNCTION_INDEX_LEB` for function indices, `R_WASM_TAG_INDEX_LEB` for tag indices, and `R_WASM_TABLE_NUMBER_LEB` for table indices.
 
 ## How It Works
 
@@ -49,7 +49,7 @@ plain wasm bytes
     v
 code section + relocatable-immediate offsets
     |
-    | 5. patch function/table immediates
+    | 5. patch function/table/tag immediates
     |    to fixed-width 5-byte LEBs when `(@reloc)` is present
     |    so relocation offsets stay stable
     v
