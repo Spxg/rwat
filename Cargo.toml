@@ -1,6 +1,6 @@
 [package]
 name = "rwat"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "Parse annotated wat into relocatable wasm file."
 repository = "https://github.com/Spxg/rwat"
@@ -15,11 +15,11 @@ name = "rwat"
 path = "src/main.rs"
 
 [dependencies]
-wasm-encoder = { version = "0.252.0", default-features = false }
-wasmparser = { version = "0.252.0", default-features = false }
-wast = { version = "252.0.0", default-features = false, features = [
+wasm-encoder = { version = "0.254.0", default-features = false }
+wasmparser = { version = "0.254.0", default-features = false }
+wast = { version = "254.0.0", default-features = false, features = [
   "wasm-module"
 ] }
 
 [dev-dependencies]
-wasmprinter = { version = "0.252.0", default-features = false }
+wasmprinter = { version = "0.254.0", default-features = false }
