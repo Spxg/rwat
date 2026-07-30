@@ -20,7 +20,7 @@ pub fn parse_rwat(wat: &str) -> wast::parser::Result<Vec<u8>>
 
 For function, table, or tag definitions, if you write `(@sym)` without an explicit name, `rwat` uses the item ID as the symbol name when available.
 
-Currently, `rwat` emits `R_WASM_FUNCTION_INDEX_LEB` for function indices, `R_WASM_TAG_INDEX_LEB` for tag indices, and `R_WASM_TABLE_NUMBER_LEB` for table indices.
+Currently, `rwat` emits `R_WASM_FUNCTION_INDEX_LEB` for function indices, `R_WASM_TYPE_INDEX_LEB` for indirect-call type indices, `R_WASM_TAG_INDEX_LEB` for tag indices, and `R_WASM_TABLE_NUMBER_LEB` for table indices.
 
 ## How It Works
 
@@ -49,7 +49,7 @@ plain wasm bytes
     v
 code section + relocatable-immediate offsets
     |
-    | 5. patch function/table/tag immediates
+    | 5. patch function/type/table/tag immediates
     |    to fixed-width 5-byte LEBs when `(@reloc)` is present
     |    so relocation offsets stay stable
     v
