@@ -2,9 +2,10 @@ use wasmparser::{Catch, Operator};
 use wast::core::{Instruction, TryTableCatchKind};
 use wast::token::Index;
 
-use crate::types::SymbolKey;
+use crate::types::{RelocTarget, SymbolKey};
 
 const RELOC_FUNCTION_INDEX_LEB: u8 = 0;
+const RELOC_TYPE_INDEX_LEB: u8 = 6;
 const RELOC_TAG_INDEX_LEB: u8 = 10;
 const RELOC_TABLE_NUMBER_LEB: u8 = 20;
 
@@ -13,7 +14,7 @@ pub(crate) struct RelocPatch {
     pub(crate) immediate_start: usize,
     pub(crate) original_len: usize,
     pub(crate) reloc_type: u8,
-    pub(crate) target: SymbolKey,
+    pub(crate) target: RelocTarget,
 }
 
 pub(crate) fn is_relocatable_keyword(keyword: &str) -> bool {
@@ -96,7 +97,7 @@ pub(crate) fn operator_patches(
                 immediate_start,
                 original_len: u32_leb_len_at(body, immediate_start),
                 reloc_type: RELOC_FUNCTION_INDEX_LEB,
-                target: SymbolKey::Function(function_index),
+                target: RelocTarget::Symbol(SymbolKey::Function(function_index)),
             }])
         }
         Operator::Throw { tag_index } => {
@@ -105,19 +106,33 @@ pub(crate) fn operator_patches(
                 immediate_start,
                 original_len: u32_leb_len_at(body, immediate_start),
                 reloc_type: RELOC_TAG_INDEX_LEB,
-                target: SymbolKey::Tag(tag_index),
+                target: RelocTarget::Symbol(SymbolKey::Tag(tag_index)),
             }])
         }
-        Operator::CallIndirect { table_index, .. }
-        | Operator::ReturnCallIndirect { table_index, .. } => {
+        Operator::CallIndirect {
+            type_index,
+            table_index,
+        }
+        | Operator::ReturnCallIndirect {
+            type_index,
+            table_index,
+        } => {
             let type_start = offset + 1;
             let immediate_start = type_start + u32_leb_len_at(body, type_start);
-            Some(vec![RelocPatch {
-                immediate_start,
-                original_len: u32_leb_len_at(body, immediate_start),
-                reloc_type: RELOC_TABLE_NUMBER_LEB,
-                target: SymbolKey::Table(table_index),
-            }])
+            Some(vec![
+                RelocPatch {
+                    immediate_start: type_start,
+                    original_len: u32_leb_len_at(body, type_start),
+                    reloc_type: RELOC_TYPE_INDEX_LEB,
+                    target: RelocTarget::Type(type_index),
+                },
+                RelocPatch {
+                    immediate_start,
+                    original_len: u32_leb_len_at(body, immediate_start),
+                    reloc_type: RELOC_TABLE_NUMBER_LEB,
+                    target: RelocTarget::Symbol(SymbolKey::Table(table_index)),
+                },
+            ])
         }
         Operator::TableGet { table } | Operator::TableSet { table } => {
             let immediate_start = offset + 1;
@@ -125,7 +140,7 @@ pub(crate) fn operator_patches(
                 immediate_start,
                 original_len: u32_leb_len_at(body, immediate_start),
                 reloc_type: RELOC_TABLE_NUMBER_LEB,
-                target: SymbolKey::Table(table),
+                target: RelocTarget::Symbol(SymbolKey::Table(table)),
             }])
         }
         Operator::TableInit { table, .. } => {
@@ -135,7 +150,7 @@ pub(crate) fn operator_patches(
                 immediate_start,
                 original_len: u32_leb_len_at(body, immediate_start),
                 reloc_type: RELOC_TABLE_NUMBER_LEB,
-                target: SymbolKey::Table(table),
+                target: RelocTarget::Symbol(SymbolKey::Table(table)),
             }])
         }
         Operator::TableCopy {
@@ -150,13 +165,13 @@ pub(crate) fn operator_patches(
                     immediate_start: first_immediate_start,
                     original_len: u32_leb_len_at(body, first_immediate_start),
                     reloc_type: RELOC_TABLE_NUMBER_LEB,
-                    target: SymbolKey::Table(dst_table),
+                    target: RelocTarget::Symbol(SymbolKey::Table(dst_table)),
                 },
                 RelocPatch {
                     immediate_start: second_immediate_start,
                     original_len: u32_leb_len_at(body, second_immediate_start),
                     reloc_type: RELOC_TABLE_NUMBER_LEB,
-                    target: SymbolKey::Table(src_table),
+                    target: RelocTarget::Symbol(SymbolKey::Table(src_table)),
                 },
             ])
         }
@@ -205,7 +220,7 @@ fn try_table_patches(
                     immediate_start: cursor,
                     original_len,
                     reloc_type: RELOC_TAG_INDEX_LEB,
-                    target: SymbolKey::Tag(tag),
+                    target: RelocTarget::Symbol(SymbolKey::Tag(tag)),
                 });
                 cursor += original_len;
             }
@@ -234,7 +249,7 @@ fn prefixed_table_patch(offset: usize, body: &[u8], target: SymbolKey) -> Option
         immediate_start,
         original_len: u32_leb_len_at(body, immediate_start),
         reloc_type: RELOC_TABLE_NUMBER_LEB,
-        target,
+        target: RelocTarget::Symbol(target),
     }])
 }
 
@@ -248,7 +263,7 @@ fn prefixed_table_atomic_patch(
         immediate_start,
         original_len: u32_leb_len_at(body, immediate_start),
         reloc_type: RELOC_TABLE_NUMBER_LEB,
-        target: SymbolKey::Table(table_index),
+        target: RelocTarget::Symbol(SymbolKey::Table(table_index)),
     }])
 }
 

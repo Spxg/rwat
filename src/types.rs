@@ -76,6 +76,21 @@ impl SymbolKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelocTarget {
+    Symbol(SymbolKey),
+    Type(u32),
+}
+
+impl RelocTarget {
+    pub(crate) fn index(self) -> u32 {
+        match self {
+            Self::Symbol(symbol) => symbol.index(),
+            Self::Type(index) => index,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum Symbol<'a> {
     FunctionImport {
@@ -140,7 +155,7 @@ pub(crate) struct LinkInfo<'a> {
 pub(crate) struct CodeRelocation {
     pub(crate) offset: u32,
     pub(crate) reloc_type: u8,
-    pub(crate) target: SymbolKey,
+    pub(crate) target: RelocTarget,
 }
 
 #[derive(Debug)]

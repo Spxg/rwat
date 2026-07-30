@@ -245,7 +245,7 @@ fn test_print_group2_imports() {
 }
 
 #[test]
-fn test_print_call_indirect_table_reloc() {
+fn test_print_call_indirect_type_and_table_relocs() {
     let actual = print_wat(
         r#"
             (module (@rwat)
@@ -266,7 +266,7 @@ fn test_print_call_indirect_table_reloc() {
     call_indirect (type 0)
   )
   (@custom "linking" (after code) "\02\08\04\01\05\10\00")
-  (@custom "reloc.CODE" (after code) "\03\01\14\07\00")
+  (@custom "reloc.CODE" (after code) "\03\02\06\06\00\14\0b\00")
 )
 "#;
     assert_eq!(actual, expected);

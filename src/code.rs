@@ -5,6 +5,7 @@ use crate::parse::Result;
 use crate::reloc::{RelocPatch, operator_patches, u32_leb_len};
 use crate::types::{
     CODE_SECTION_ID, CodeRelocation, DefinedFunc, LinkInfo, PatchedCodeSection, RawSection,
+    RelocTarget,
 };
 
 pub(crate) fn encode_reloc_code_section(
@@ -27,8 +28,12 @@ pub(crate) fn encode_reloc_code_section(
         data.push(reloc.reloc_type);
         // Offset of the reloc index.
         reloc.offset.encode(&mut data);
-        // The index of the reloc symbol.
-        link_info.symbol_indices[&reloc.target].encode(&mut data);
+        // The symbol-table index, or the input type-section index for a type
+        // relocation.
+        match reloc.target {
+            RelocTarget::Symbol(symbol) => link_info.symbol_indices[&symbol].encode(&mut data),
+            RelocTarget::Type(index) => index.encode(&mut data),
+        }
     }
 
     Some(data)
