@@ -6,20 +6,48 @@ use crate::reloc::is_relocatable_keyword;
 use crate::types::SymbolAnnotation;
 
 // Example:
-// `(func $f (@sym (name "foo")) (result i32) i32.const 0)`
-//  -> `Explicit("foo")`
-// `(func $f (@sym) (result i32) i32.const 0)`
-//  -> `Inferred`
-// `(func $f (result i32) i32.const 0)`
-//  -> `Missing`
-pub(crate) fn scan_func_sym<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor<'a>)> {
+// `(func $f (@sym (name "foo")) (@comdat "group") ...)`
+//  -> `(Explicit("foo"), Some("group"))`
+// `(func $f (@sym) ...)`
+//  -> `(Inferred, None)`
+// `(func $f ...)`
+//  -> `(Missing, None)`
+pub(crate) fn scan_func_annotations<'a>(
+    cursor: Cursor<'a>,
+) -> Result<((SymbolAnnotation<'a>, Option<&'a str>), Cursor<'a>)> {
     let cursor = expect_keyword(cursor, "func")?;
-    let cursor = if let Some((_, next)) = cursor.id()? {
+    let mut cursor = if let Some((_, next)) = cursor.id()? {
         next
     } else {
         cursor
     };
-    scan_sym_annotation(cursor)
+
+    let mut sym = SymbolAnnotation::Missing;
+    let mut comdat = None;
+    loop {
+        let (next_sym, next) = scan_sym_annotation(cursor)?;
+        if next_sym.is_present() {
+            if sym.is_present() {
+                return Err(cursor.error("duplicate `@sym` annotation"));
+            }
+            sym = next_sym;
+            cursor = next;
+            continue;
+        }
+
+        let (next_comdat, next) = scan_comdat_annotation(cursor)?;
+        if let Some(name) = next_comdat {
+            if comdat.replace(name).is_some() {
+                return Err(cursor.error("duplicate `@comdat` annotation"));
+            }
+            cursor = next;
+            continue;
+        }
+
+        break;
+    }
+
+    Ok(((sym, comdat), cursor))
 }
 
 // Example:
@@ -206,6 +234,11 @@ fn scan_item_sig<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, Cursor
         let (next_sym, next) = scan_sym_annotation(cursor)?;
         sym = next_sym;
         cursor = next;
+        let (comdat, next) = scan_comdat_annotation(cursor)?;
+        if comdat.is_some() {
+            return Err(cursor.error("`@comdat` is only allowed on defined functions"));
+        }
+        cursor = next;
     }
 
     cursor = skip_until_rparen(cursor)?;
@@ -240,6 +273,25 @@ fn scan_sym_annotation<'a>(cursor: Cursor<'a>) -> Result<(SymbolAnnotation<'a>, 
     };
 
     Ok((SymbolAnnotation::Explicit(name), cursor))
+}
+
+// `(@comdat "group")` -> `Some("group")`
+// `(type 0)` -> `None`
+fn scan_comdat_annotation<'a>(cursor: Cursor<'a>) -> Result<(Option<&'a str>, Cursor<'a>)> {
+    let start = cursor;
+    let Some(cursor) = cursor.lparen()? else {
+        return Ok((None, cursor));
+    };
+    let Some((annotation, cursor)) = cursor.annotation()? else {
+        return Ok((None, start));
+    };
+    if annotation != "comdat" {
+        return Ok((None, start));
+    }
+
+    let (name, cursor) = expect_utf8_string(cursor)?;
+    let cursor = expect_rparen(cursor)?;
+    Ok((Some(name), cursor))
 }
 
 fn skip_until_rparen<'a>(mut cursor: Cursor<'a>) -> Result<Cursor<'a>> {
@@ -337,9 +389,10 @@ mod tests {
         }
     }
 
-    fn parse_func_sym(src: &str) -> OwnedSymbolAnnotation {
+    fn parse_func_annotations(src: &str) -> (OwnedSymbolAnnotation, Option<String>) {
         let buf = ParseBuffer::new(src).unwrap();
-        into_owned(parser::parse::<FuncSym<'_>>(&buf).unwrap().0)
+        let (sym, comdat) = parser::parse::<FuncAnnotations<'_>>(&buf).unwrap().0;
+        (into_owned(sym), comdat.map(str::to_owned))
     }
 
     fn parse_table_sym(src: &str) -> OwnedSymbolAnnotation {
@@ -388,14 +441,15 @@ mod tests {
         into_owned(parser::parse::<SymAnnotation<'_>>(&buf).unwrap().0)
     }
 
-    struct FuncSym<'a>(SymbolAnnotation<'a>);
+    struct FuncAnnotations<'a>((SymbolAnnotation<'a>, Option<&'a str>));
 
-    impl<'a> Parse<'a> for FuncSym<'a> {
+    impl<'a> Parse<'a> for FuncAnnotations<'a> {
         fn parse(parser: Parser<'a>) -> Result<Self> {
             let _sym = parser.register_annotation("sym");
+            let _comdat = parser.register_annotation("comdat");
             parser.parens(|parser| {
-                let sym = parser.step(scan_func_sym)?;
-                Ok(FuncSym(sym))
+                let annotations = parser.step(scan_func_annotations)?;
+                Ok(FuncAnnotations(annotations))
             })
         }
     }
@@ -470,18 +524,21 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_func_sym_examples() {
+    fn test_scan_func_annotations_examples() {
         assert_eq!(
-            parse_func_sym(r#"(func $f (@sym (name "foo")))"#),
-            OwnedSymbolAnnotation::Explicit("foo".into())
+            parse_func_annotations(r#"(func $f (@sym (name "foo")) (@comdat "group"))"#),
+            (
+                OwnedSymbolAnnotation::Explicit("foo".into()),
+                Some("group".into()),
+            )
         );
         assert_eq!(
-            parse_func_sym(r#"(func $f (@sym))"#),
-            OwnedSymbolAnnotation::Inferred
+            parse_func_annotations(r#"(func $f (@comdat "group") (@sym))"#),
+            (OwnedSymbolAnnotation::Inferred, Some("group".into()))
         );
         assert_eq!(
-            parse_func_sym(r#"(func $f)"#),
-            OwnedSymbolAnnotation::Missing
+            parse_func_annotations(r#"(func $f)"#),
+            (OwnedSymbolAnnotation::Missing, None)
         );
     }
 

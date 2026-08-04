@@ -102,6 +102,28 @@ fn test_print_defined_symbol_module_without_imports() {
 }
 
 #[test]
+fn test_print_function_comdat() {
+    let src = r#"
+        (module (@rwat)
+          (import "env" "imported" (func))
+          (func $foo (@sym) (@comdat "group"))
+          (func $bar (@comdat "group") (@sym))
+        )
+    "#;
+    let wasm = rwat::parse_rwat(src).unwrap();
+    let expected = r#"(module
+  (type (;0;) (func))
+  (import "env" "imported" (func (;0;) (type 0)))
+  (func $foo (;1;) (type 0))
+  (func $bar (;2;) (type 0))
+  (@custom "linking" (after code) "\02\08\0f\02\00\00\01\03foo\00\00\02\03bar\07\0d\01\05group\00\02\01\01\01\02")
+)
+"#;
+
+    assert_eq!(wasmprinter::print_bytes(&wasm).unwrap(), expected);
+}
+
+#[test]
 fn test_print_empty_module() {
     let actual = print_wat(
         r#"
@@ -352,6 +374,25 @@ fn test_parse_rejects_missing_rwat_annotation() {
 
     let err = rwat::parse_rwat(wat).unwrap_err().to_string();
     assert!(err.contains("expected module header annotation `(@rwat)`"));
+}
+
+#[test]
+fn test_parse_rejects_comdat_on_imported_function() {
+    for wat in [
+        r#"
+            (module (@rwat)
+              (func $foo (@sym) (@comdat "group") (import "env" "foo"))
+            )
+        "#,
+        r#"
+            (module (@rwat)
+              (import "env" "foo" (func $foo (@sym) (@comdat "group")))
+            )
+        "#,
+    ] {
+        let err = rwat::parse_rwat(wat).unwrap_err().to_string();
+        assert!(err.contains("`@comdat` is only allowed on defined functions"));
+    }
 }
 
 #[test]

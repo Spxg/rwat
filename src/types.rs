@@ -22,6 +22,7 @@ pub(crate) struct RelocImports<'a> {
 #[derive(Debug)]
 pub(crate) struct FuncAnnotation<'a> {
     pub(crate) sym: SymbolAnnotation<'a>,
+    pub(crate) comdat: Option<&'a str>,
     pub(crate) reloc_spans: Vec<Span>,
 }
 
@@ -127,6 +128,12 @@ pub(crate) struct DefinedFunc<'a> {
 }
 
 #[derive(Debug)]
+pub(crate) struct Comdat<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) functions: Vec<u32>,
+}
+
+#[derive(Debug)]
 pub(crate) struct DefinedTable<'a> {
     pub(crate) symbol_name: Option<&'a str>,
     pub(crate) span: Span,
@@ -149,6 +156,7 @@ pub(crate) struct LinkInfo<'a> {
     pub(crate) symbols: Vec<Symbol<'a>>,
     pub(crate) symbol_indices: HashMap<SymbolKey, u32>,
     pub(crate) defined_funcs: Vec<DefinedFunc<'a>>,
+    pub(crate) comdats: Vec<Comdat<'a>>,
 }
 
 #[derive(Debug)]

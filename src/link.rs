@@ -7,16 +7,19 @@ use wast::token::Id;
 use crate::parse::{Result, error};
 use crate::reloc;
 use crate::types::{
-    DefinedFunc, DefinedTable, DefinedTag, FuncAnnotation, LinkInfo, ParsedRelocInstruction,
-    RelocImports, RelocWat, Symbol, SymbolAnnotation, SymbolKey, TableAnnotation, TagAnnotation,
+    Comdat, DefinedFunc, DefinedTable, DefinedTag, FuncAnnotation, LinkInfo,
+    ParsedRelocInstruction, RelocImports, RelocWat, Symbol, SymbolAnnotation, SymbolKey,
+    TableAnnotation, TagAnnotation,
 };
 
-// Encode the symbol table here because wasm-encoder does not currently expose
-// a tag-symbol API.
+// Encode these linking subsections here because wasm-encoder does not currently
+// expose tag-symbol or COMDAT APIs.
 const SYMTAB_FUNCTION: u8 = 0;
 const SYMTAB_TAG: u8 = 4;
 const SYMTAB_TABLE: u8 = 5;
+const WASM_COMDAT_INFO: u8 = 7;
 const WASM_SYMBOL_TABLE: u8 = 8;
+const WASM_COMDAT_FUNCTION: u8 = 1;
 const WASM_SYM_UNDEFINED: u32 = 0x10;
 const WASM_SYM_EXPLICIT_NAME: u32 = 0x40;
 
@@ -91,65 +94,92 @@ pub(crate) fn linking_section(link_info: &LinkInfo<'_>) -> Option<Vec<u8>> {
             }
     }
 
-    if link_info.symbols.is_empty() {
+    if link_info.symbols.is_empty() && link_info.comdats.is_empty() {
         return None;
-    }
-
-    let mut symbols = Vec::new();
-    u32::try_from(link_info.symbols.len())
-        .unwrap()
-        .encode(&mut symbols);
-
-    for symbol in &link_info.symbols {
-        let (kind, flags, index, name) = match *symbol {
-            Symbol::FunctionImport {
-                index,
-                explicit_name,
-            } => (
-                SYMTAB_FUNCTION,
-                import_flags(explicit_name),
-                index,
-                explicit_name,
-            ),
-            Symbol::FunctionDefined { index, symbol_name } => {
-                (SYMTAB_FUNCTION, 0, index, Some(symbol_name))
-            }
-            Symbol::TableImport {
-                index,
-                explicit_name,
-            } => (
-                SYMTAB_TABLE,
-                import_flags(explicit_name),
-                index,
-                explicit_name,
-            ),
-            Symbol::TableDefined { index, symbol_name } => {
-                (SYMTAB_TABLE, 0, index, Some(symbol_name))
-            }
-            Symbol::TagImport {
-                index,
-                explicit_name,
-            } => (
-                SYMTAB_TAG,
-                import_flags(explicit_name),
-                index,
-                explicit_name,
-            ),
-            Symbol::TagDefined { index, symbol_name } => (SYMTAB_TAG, 0, index, Some(symbol_name)),
-        };
-
-        symbols.push(kind);
-        flags.encode(&mut symbols);
-        index.encode(&mut symbols);
-        if let Some(name) = name {
-            name.encode(&mut symbols);
-        }
     }
 
     let mut linking = Vec::new();
     2_u32.encode(&mut linking);
-    linking.push(WASM_SYMBOL_TABLE);
-    symbols.encode(&mut linking);
+
+    if !link_info.symbols.is_empty() {
+        let mut symbols = Vec::new();
+        u32::try_from(link_info.symbols.len())
+            .unwrap()
+            .encode(&mut symbols);
+
+        for symbol in &link_info.symbols {
+            let (kind, flags, index, name) = match *symbol {
+                Symbol::FunctionImport {
+                    index,
+                    explicit_name,
+                } => (
+                    SYMTAB_FUNCTION,
+                    import_flags(explicit_name),
+                    index,
+                    explicit_name,
+                ),
+                Symbol::FunctionDefined { index, symbol_name } => {
+                    (SYMTAB_FUNCTION, 0, index, Some(symbol_name))
+                }
+                Symbol::TableImport {
+                    index,
+                    explicit_name,
+                } => (
+                    SYMTAB_TABLE,
+                    import_flags(explicit_name),
+                    index,
+                    explicit_name,
+                ),
+                Symbol::TableDefined { index, symbol_name } => {
+                    (SYMTAB_TABLE, 0, index, Some(symbol_name))
+                }
+                Symbol::TagImport {
+                    index,
+                    explicit_name,
+                } => (
+                    SYMTAB_TAG,
+                    import_flags(explicit_name),
+                    index,
+                    explicit_name,
+                ),
+                Symbol::TagDefined { index, symbol_name } => {
+                    (SYMTAB_TAG, 0, index, Some(symbol_name))
+                }
+            };
+
+            symbols.push(kind);
+            flags.encode(&mut symbols);
+            index.encode(&mut symbols);
+            if let Some(name) = name {
+                name.encode(&mut symbols);
+            }
+        }
+
+        linking.push(WASM_SYMBOL_TABLE);
+        symbols.encode(&mut linking);
+    }
+
+    if !link_info.comdats.is_empty() {
+        let mut comdats = Vec::new();
+        u32::try_from(link_info.comdats.len())
+            .unwrap()
+            .encode(&mut comdats);
+        for comdat in &link_info.comdats {
+            comdat.name.encode(&mut comdats);
+            0_u32.encode(&mut comdats);
+            u32::try_from(comdat.functions.len())
+                .unwrap()
+                .encode(&mut comdats);
+            for &index in &comdat.functions {
+                comdats.push(WASM_COMDAT_FUNCTION);
+                index.encode(&mut comdats);
+            }
+        }
+
+        linking.push(WASM_COMDAT_INFO);
+        comdats.encode(&mut linking);
+    }
+
     Some(linking)
 }
 
@@ -161,6 +191,8 @@ struct LinkInfoBuilder<'a> {
     defined_funcs: Vec<DefinedFunc<'a>>,
     defined_tables: Vec<DefinedTable<'a>>,
     defined_tags: Vec<DefinedTag<'a>>,
+    comdats: Vec<Comdat<'a>>,
+    comdat_indices: HashMap<&'a str, usize>,
     linking: HashSet<SymbolKey>,
 }
 
@@ -186,6 +218,9 @@ impl<'a> LinkInfoBuilder<'a> {
         let reloc_instrs = resolve_func_relocs(func, &annotation.reloc_spans, &mut self.linking);
 
         self.mark_function_if_present(index, annotation.sym);
+        if let Some(name) = annotation.comdat {
+            self.add_comdat_function(name, index);
+        }
         self.defined_funcs.push(DefinedFunc {
             symbol_name,
             reloc_instrs,
@@ -251,6 +286,18 @@ impl<'a> LinkInfoBuilder<'a> {
         u32::try_from(self.imported_tags.len() + self.defined_tags.len()).unwrap()
     }
 
+    fn add_comdat_function(&mut self, name: &'a str, function_index: u32) {
+        let group_index = *self.comdat_indices.entry(name).or_insert_with(|| {
+            let index = self.comdats.len();
+            self.comdats.push(Comdat {
+                name,
+                functions: Vec::new(),
+            });
+            index
+        });
+        self.comdats[group_index].functions.push(function_index);
+    }
+
     fn mark_function_if_present(&mut self, index: u32, sym: SymbolAnnotation<'a>) {
         if sym.is_present() {
             self.linking.insert(SymbolKey::Function(index));
@@ -298,6 +345,7 @@ impl<'a> LinkInfoBuilder<'a> {
             symbols,
             symbol_indices,
             defined_funcs: self.defined_funcs,
+            comdats: self.comdats,
         })
     }
 

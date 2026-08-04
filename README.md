@@ -12,13 +12,16 @@ pub fn parse_rwat(wat: &str) -> wast::parser::Result<Vec<u8>>
 
 ## Annotations
 
-`rwat` extends plain wat with three annotations:
+`rwat` extends plain wat with annotations:
 
 - `(@rwat)`: required on the module header to enable `rwat` parsing.
 - `(@sym)` or `(@sym (name "..."))`: declares a symbol for a function, table, or tag import or definition.
+- `(@comdat "...")`: puts a defined function in a COMDAT group, allowing the linker to keep one copy of identically named groups from multiple object files.
 - `(@reloc)`: marks the immediately preceding relocatable instruction as requiring a relocation entry. This includes `call`, `return_call`, `call_indirect`, `return_call_indirect`, `throw`, typed `try_table` catches, and table instructions such as `table.get`, `table.copy`, and `table.size`.
 
 For function, table, or tag definitions, if you write `(@sym)` without an explicit name, `rwat` uses the item ID as the symbol name when available.
+
+Functions with the same `@comdat` name in one module are members of the same group. The group name must only be reused for definitions that are semantically interchangeable because the linker does not compare their bodies.
 
 Currently, `rwat` emits `R_WASM_FUNCTION_INDEX_LEB` for function indices, `R_WASM_TYPE_INDEX_LEB` for indirect-call type indices, `R_WASM_TAG_INDEX_LEB` for tag indices, and `R_WASM_TABLE_NUMBER_LEB` for table indices.
 
@@ -32,6 +35,7 @@ annotated wat
     | 1. scan custom annotations
     |    - (@rwat)
     |    - (@sym)
+    |    - (@comdat)
     |    - (@reloc)
     v
 custom annotation metadata
@@ -55,8 +59,8 @@ code section + relocatable-immediate offsets
     v
 patched code section
     |
-    | 6. emit `linking` symbol table
-    |    and `reloc.CODE` entries
+    | 6. emit the `linking` symbol table and COMDAT groups,
+    |    plus `reloc.CODE` entries
     v
 `wasm-encoder` final assembly
     |

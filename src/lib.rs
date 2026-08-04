@@ -2,8 +2,8 @@
 //! custom sections.
 //!
 //! The main entry point is [`parse_rwat`], which accepts wat source using the
-//! `(@rwat)`, `(@sym)`, and `(@reloc)` annotations and returns encoded wasm
-//! bytes suitable for linking with tools such as `wasm-ld`.
+//! `(@rwat)`, `(@sym)`, `(@comdat)`, and `(@reloc)` annotations and returns
+//! encoded wasm bytes suitable for linking with tools such as `wasm-ld`.
 
 mod code;
 mod emit;

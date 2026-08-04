@@ -164,6 +164,7 @@ impl<'a> Parse<'a> for RelocImports<'a> {
     fn parse(parser: Parser<'a>) -> Result<Self> {
         let syms = {
             let _sym = parser.register_annotation("sym");
+            let _comdat = parser.register_annotation("comdat");
             parser.step(|cursor| {
                 let start = cursor;
                 let (syms, _) = scan::scan_import_syms(cursor)?;
@@ -177,12 +178,13 @@ impl<'a> Parse<'a> for RelocImports<'a> {
 
 impl<'a> Parse<'a> for ParsedRelocFunc<'a> {
     fn parse(parser: Parser<'a>) -> Result<Self> {
-        let sym = {
+        let (sym, comdat) = {
             let _sym = parser.register_annotation("sym");
+            let _comdat = parser.register_annotation("comdat");
             parser.step(|cursor| {
                 let start = cursor;
-                let (sym, _) = scan::scan_func_sym(cursor)?;
-                Ok((sym, start))
+                let (annotations, _) = scan::scan_func_annotations(cursor)?;
+                Ok((annotations, start))
             })?
         };
         let reloc_spans = {
@@ -196,6 +198,10 @@ impl<'a> Parse<'a> for ParsedRelocFunc<'a> {
         let func: Func<'a> = parser.parse()?;
         match func.kind {
             FuncKind::Import(_, _) => {
+                if comdat.is_some() {
+                    return Err(parser
+                        .error_at(func.span, "`@comdat` is only allowed on defined functions"));
+                }
                 if !reloc_spans.is_empty() {
                     return Err(parser.error_at(
                         func.span,
@@ -206,6 +212,7 @@ impl<'a> Parse<'a> for ParsedRelocFunc<'a> {
             }
             FuncKind::Inline { .. } => Ok(ParsedRelocFunc::Defined(FuncAnnotation {
                 sym,
+                comdat,
                 reloc_spans,
             })),
         }
